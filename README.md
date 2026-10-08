@@ -130,6 +130,8 @@ original code (Z form, 1e-12); the geometry ports against stella output; the com
 
 ## stella benchmark (`benchmarks/stella_cbc/`)
 
+Journal: 2026-10-08_secondary-mode-solver-rebuilt-old-lambda-form-had
+
 CBC, $q=20$, $\eta_\parallel=\eta_\perp=3$, Gaussian primary (width π in zed), Θ = 0.2886 stella runs
 (`fig_stella_q20.pdf`, `fig_stella_q20_dev.pdf`; data `data_caseA_label*.json`). Deviation from stella:
 
