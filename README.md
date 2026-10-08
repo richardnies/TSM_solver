@@ -128,6 +128,31 @@ expansion (error ∝ $b^2$); J functions against 50-digit mpmath; the paper's ex
 reality and local symmetries; Cauchy's integral of $D$ across ${\rm Im}\,\omega=0$; the regression value of the
 original code (Z form, 1e-12); the geometry ports against stella output; the compatibility shim.
 
+## stella benchmark (`benchmarks/stella_cbc/`)
+
+CBC, $q=20$, $\eta_\parallel=\eta_\perp=3$, Gaussian primary (width π in zed), Θ = 0.2886 stella runs
+(`fig_stella_q20.pdf`, `fig_stella_q20_dev.pdf`; data `data_caseA_label*.json`). Deviation from stella:
+
+| variant | $\omega_r$ | $\gamma$ |
+|---|---|---|
+| Miller geometry, true stella amplitude, $k_x\rho_i \ge 0.3$ | +0.2 to +1.0 % | −0.4 to +2.2 % |
+| same, $k_x\rho_i = 0.1$–0.2 | +0.8 to +2.8 % | +0.1 to +4.4 % |
+| circular model, legacy amplitude (old inputs) | −2.3 to +1.1 % | −1.7 to +2.7 % |
+| original code (stored roots) | −10 to +3.3 % | −9.4 to +8.8 % |
+
+Roots are not followed into the ISM region ($\min|D_{\rm ISM}|\to 0$: $k_x\rho_i \gtrsim 0.85$ at $\mathcal A=1$,
+$\gtrsim 0.55$ at $\mathcal A = 4$, where stella's frequency leaves the TSM branch).
+At $q = 2.8$ (`fig_stella_q2.8.pdf`) the theory has no root near stella's modes: below $k_x\rho_i \approx 1/2q$
+stella's RDK mode is not reproduced, as parallel streaming (neglected in the theory) matters there.
+
+## Timing (`benchmarks/timing.py`, `timing.json`; error against a tight new reference)
+
+| problem | old | new, 1 thread | new, 48 threads |
+|---|---|---|---|
+| Z-form D, regression point | 0.30 s (err 1e-12) | 0.03 s (err 1e-15) | |
+| λ-form D, TSM point | 5.1 s (eps 1e-6; err 1.5e-2 from the bug) | 1.3 s (err 1e-16) | 0.07 s |
+| TSM root, $k_x = 0.5$ | 62 s (lm; ω off by 9e-3) | 8.9 s (Muller) | 0.55 s |
+
 ## Changes with respect to `code_eval_disp_NEW`
 
 1. **Bug fixed (λ form):** $\Gamma_0(\tilde b)=e^{-\tilde b}I_0(\tilde b)$ for complex $\tilde b$ was computed with scipy's
