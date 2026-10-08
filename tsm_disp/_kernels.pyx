@@ -279,7 +279,7 @@ cdef double complex lam_g(double s, void* vp) nogil:
     return (-1j * p.pref * sq * d1 * (g0 * (p.w1 + p.w2 * d2 + p.w3 * d1) + bh * g0p * p.w3 * d1) * p.dirn)
 
 
-cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval) nogil:
+cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval, bint principal=False) nogil:
     """∫ along λ = lam0 + i s/ω̄, s ∈ [0, ∞): Gauss–Laguerre when the singularities λ = ik/ωM
     (k = 1, 2) are far from the ray in the sense |Im √s_k| ≥ Q, adaptive GK15 otherwise."""
     cdef double complex sk
@@ -287,6 +287,11 @@ cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int*
     cdef double brk[4]
     cdef int k, nb = 2
     cdef double complex acc = 0.0
+    cdef double complex rot_save = p.rot, rh_save = p.rothalf
+    cdef double complex out
+    if principal:                      # sqrt continuous along this ray: principal branch
+        p.rot = 1.0
+        p.rothalf = 1.0
     p.lam0 = lam0
     p.dirn = 1j / p.wbar
     p.pref = cexp(1j * lam0 * p.wbar)
@@ -299,21 +304,48 @@ cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int*
         for k in range(16):
             acc = acc + GLW16[k] * lam_g(GLX16[k], p)
         neval[0] += 16
-        return acc
-    if q >= Q_GL48:
+        out = acc
+    elif q >= Q_GL48:
         for k in range(48):
             acc = acc + GLW48[k] * lam_g(GLX48[k], p)
         neval[0] += 48
-        return acc
-    brk[0] = 1.0
-    brk[1] = 4.0
-    for k in range(1, 3):
-        sk = -1j * p.wbar * (1j * k / p.wM - lam0)
-        if creal(sk) > 0 and creal(sk) < 40.0:
-            brk[nb] = creal(sk)
-            nb += 1
-    smax = 40.0 + (log(cabs(p.pref)) if cabs(p.pref) > 1.0 else 0.0)
-    return leg(p, 0.0, smax, brk, nb, tol, ier, neval)
+        out = acc
+    else:
+        brk[0] = 1.0
+        brk[1] = 4.0
+        for k in range(1, 3):
+            sk = -1j * p.wbar * (1j * k / p.wM - lam0)
+            if creal(sk) > 0 and creal(sk) < 40.0:
+                brk[nb] = creal(sk)
+                nb += 1
+        smax = 40.0 + (log(cabs(p.pref)) if cabs(p.pref) > 1.0 else 0.0)
+        out = leg(p, 0.0, smax, brk, nb, tol, ier, neval)
+    p.rot = rot_save
+    p.rothalf = rh_save
+    return out
+
+
+cdef double ray_growth(double complex Om, double b) nogil:
+    """max over the integrated ray s ∈ [0, 40] of −s − 2 Re b̃(s), b̃ = b/(1 − s/2Ω): the log of
+    the largest integrand magnitude (|Γ0(b̃)| ≲ e^{−2 Re b̃}). Re b̃ is smallest near
+    s* = 2 Re Ω + 2|Im Ω|(1 + √(1+ρ²))/ρ, ρ = Re Ω/|Im Ω|."""
+    cdef double ORe = creal(Om), OIm = fabs(cimag(Om)), rho, ss, g, gmax = -1e300
+    cdef double cand[3]
+    cdef int i
+    if ORe <= 0:
+        return 0.0
+    if OIm < 1e-300:
+        OIm = 1e-300
+    rho = ORe / OIm
+    ss = 2 * ORe + 2 * OIm * (1 + sqrt(1 + rho * rho)) / rho
+    cand[0] = 0.0
+    cand[1] = 40.0
+    cand[2] = ss if ss < 40.0 else 40.0
+    for i in range(3):
+        g = -cand[i] - 2 * creal(b / (1.0 - cand[i] / (2 * Om)))
+        if g > gmax:
+            gmax = g
+    return gmax
 
 
 cdef double complex N_lambda(double complex wbar, double complex w1, double complex w2, double complex w3,
@@ -351,7 +383,9 @@ cdef double complex N_lambda(double complex wbar, double complex w1, double comp
     cdef bint resonant = creal(wbar) * wM > 0
     if cimag(wbar) > 0:
         q = fabs(cimag(csqrt(Om)))
-        if (not resonant) or q >= Q_GL48:
+        # straight ray if the singularities are far from it (Gauss–Laguerre) or lie beyond the integrated
+        # range s ≤ 40 without making Γ0(b̃) large on it; otherwise the two-leg contour avoids them
+        if (not resonant) or q >= Q_GL48 or (creal(Om) > 40.0 and ray_growth(Om, b) < 4.0):
             res = ray(&p, 0.0, tol, &ier, neval)
         else:
             c = 2.0 * b if 2.0 * b > 1.0 else 1.0
@@ -364,6 +398,10 @@ cdef double complex N_lambda(double complex wbar, double complex w1, double comp
     else:
         if not resonant:
             res = ray(&p, 0.0, tol, &ier, neval)
+        elif creal(Om) > 40.0:
+            # the singularities lie at |e^{iλω̄}| = e^{−Re Ω} < e^{−40}: the straight ray (with the
+            # square root continuous along it) differs from the detour by a negligible loop integral
+            res = ray(&p, 0.0, tol, &ier, neval, True)
         else:
             # leg offset a minimises the cancellation e^{a|Im ω̄|} times the growth of Γ0(b̃) ~ e^{4b/c}
             # (a floor keeps the second leg away from the square-root singularity while the
@@ -504,11 +542,17 @@ cdef double complex N_Z(double complex omega, double complex oE, double complex 
                         double wM, double b, double tau, double ap, double aq, bint asym) nogil:
     """O(b) closed form of N (the quantity K of the old code): D_ISM = (τ + 1 − Γ0(b) − K)/τ."""
     cdef double complex wbar = omega - oE
-    cdef double complex Om = wbar / wM
-    cdef double complex z = arg_disp(wbar, Om)
-    cdef double complex Z = plasma_disp(z)
+    cdef double complex Om, z, Z
     cdef double complex J[5]
-    Jfuncs(z, Z, asym, J)
+    cdef int k
+    if wM == 0.0:                      # no drift: all J vanish (|ζ| → ∞)
+        for k in range(5):
+            J[k] = 0.0
+    else:
+        Om = wbar / wM
+        z = arg_disp(wbar, Om)
+        Z = plasma_disp(z)
+        Jfuncs(z, Z, asym, J)
     cdef double complex c = 1.0 / wbar
     cdef double complex Nd = (1.0 / tau - c * (oE - 0.5 * ap * oEpar - aq * oEprp)) * J[0] \
         + c * (ap * oEpar * J[1] + aq * oEprp * J[2])
