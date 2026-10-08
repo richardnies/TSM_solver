@@ -1,0 +1,101 @@
+{
+ "rows": [
+  {
+   "problem": "Z",
+   "code": "old",
+   "setting": "eps 1e-06",
+   "seconds": 0.14875197410583496,
+   "error": 7.376991766491381e-11
+  },
+  {
+   "problem": "Z",
+   "code": "old",
+   "setting": "eps 1e-08",
+   "seconds": 0.29451608657836914,
+   "error": 1.2941743595079522e-12
+  },
+  {
+   "problem": "Z",
+   "code": "new",
+   "setting": "tol 1e-08, 1 thread",
+   "seconds": 0.028465429941813152,
+   "error": 2.1930856914672177e-15
+  },
+  {
+   "problem": "Z",
+   "code": "new",
+   "setting": "tol 1e-10, 1 thread",
+   "seconds": 0.03437940279642741,
+   "error": 1.0009339424109066e-15
+  },
+  {
+   "problem": "lambda",
+   "code": "old",
+   "setting": "eps 0.001, tol_adaptive 0.0001",
+   "seconds": 0.64766526222229,
+   "error": 0.014683736484583145
+  },
+  {
+   "problem": "lambda",
+   "code": "old",
+   "setting": "eps 1e-06, tol_adaptive 0.0001",
+   "seconds": 5.076052188873291,
+   "error": 0.014684016066018346
+  },
+  {
+   "problem": "lambda",
+   "code": "old",
+   "setting": "eps 1e-06, tol_adaptive 1e-08",
+   "seconds": 18.76682734489441,
+   "error": 0.014682444479536188
+  },
+  {
+   "problem": "lambda",
+   "code": "new",
+   "setting": "tol 1e-06, 1 threads",
+   "seconds": 1.0488760471343994,
+   "error": 5.344644742688412e-16
+  },
+  {
+   "problem": "lambda",
+   "code": "new",
+   "setting": "tol 1e-08, 1 threads",
+   "seconds": 1.2675235271453857,
+   "error": 7.645093845980273e-17
+  },
+  {
+   "problem": "lambda",
+   "code": "new",
+   "setting": "tol 1e-08, 48 threads",
+   "seconds": 0.0733485221862793,
+   "error": 7.645093845980273e-17
+  },
+  {
+   "problem": "root",
+   "code": "old",
+   "setting": "lm, eps 1e-6, tol_adaptive 1e-4",
+   "seconds": 62.10188674926758,
+   "error": 0.009200642140789757,
+   "omega": "(0.579653894371796+0.2901967116078325j)"
+  },
+  {
+   "problem": "root",
+   "code": "new",
+   "setting": "Muller, tol 1e-08, 1 threads",
+   "seconds": 8.875383138656616,
+   "error": 0.0,
+   "omega": "(0.5704708528992716+0.2907655394524147j)",
+   "nfev": 7
+  },
+  {
+   "problem": "root",
+   "code": "new",
+   "setting": "Muller, tol 1e-08, 48 threads",
+   "seconds": 0.549504280090332,
+   "error": 0.0,
+   "omega": "(0.5704708528992716+0.2907655394524147j)",
+   "nfev": 7
+  }
+ ],
+ "root_reference": "(0.5704708528992716+0.2907655394524147j)"
+}

@@ -23,6 +23,7 @@ cdef extern from "complex.h" nogil:
     double complex cexp(double complex)
     double complex csqrt(double complex)
     double complex csin(double complex)
+    double complex ccos(double complex)
     double complex casin(double complex)
     double complex conj(double complex)
     double creal(double complex)
@@ -73,7 +74,7 @@ cdef double Q_GL16 = 2.5
 cdef double Q_GL48 = 1.5
 
 
-cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double* err) nogil:
+cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double* err, double* rabs) nogil:
     cdef double centr = 0.5 * (a + b)
     cdef double hl = 0.5 * (b - a)
     cdef double complex fv1[7]
@@ -115,6 +116,7 @@ cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double*
         if abserr < 50.0 * EPMACH * resabs:
             abserr = 50.0 * EPMACH * resabs
     err[0] = abserr
+    rabs[0] = resabs
 
 
 cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs, double epsrel,
@@ -123,10 +125,11 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
     cdef double A[MAXINT]
     cdef double B[MAXINT]
     cdef double E[MAXINT]
+    cdef double RA[MAXINT]
     cdef double complex V[MAXINT]
     cdef int n = 0, i, imax
     cdef double complex total, vl, vr
-    cdef double errsum, tol, el, er, emax, mid
+    cdef double errsum, tol, el, er, emax, mid, ral, rar
     if limit > MAXINT:
         limit = MAXINT
     ier[0] = 0
@@ -134,7 +137,7 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
         if pts[i + 1] > pts[i] and n < MAXINT:
             A[n] = pts[i]
             B[n] = pts[i + 1]
-            gk15(f, p, A[n], B[n], &V[n], &E[n])
+            gk15(f, p, A[n], B[n], &V[n], &E[n], &RA[n])
             neval[0] += 15
             n += 1
     while True:
@@ -154,21 +157,26 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
         if n >= limit:
             ier[0] = 1
             break
+        if emax <= 60.0 * EPMACH * RA[imax]:
+            ier[0] = 3              # the largest error is round-off: refining cannot reduce it
+            break
         mid = 0.5 * (A[imax] + B[imax])
         if mid <= A[imax] or mid >= B[imax] or (B[imax] - A[imax]) < 1e-13 * (pts[npts - 1] - pts[0]):
             E[imax] = 0.0           # cannot refine further: accept and flag
             ier[0] = 2
             continue
-        gk15(f, p, A[imax], mid, &vl, &el)
-        gk15(f, p, mid, B[imax], &vr, &er)
+        gk15(f, p, A[imax], mid, &vl, &el, &ral)
+        gk15(f, p, mid, B[imax], &vr, &er, &rar)
         neval[0] += 30
         A[n] = mid
         B[n] = B[imax]
         V[n] = vr
         E[n] = er
+        RA[n] = rar
         B[imax] = mid
         V[imax] = vl
         E[imax] = el
+        RA[imax] = ral
         n += 1
     abserr[0] = errsum
     return total
@@ -465,8 +473,13 @@ cdef inline double complex plasma_disp_asymp(double complex zeta) nogil:
 
 
 cdef inline double complex arg_disp(double complex wbar, double complex Om) nogil:
-    """ζ = √Ω on the sheet continuous with Im ω̄ > 0 (cut of the continuation along Re ω̄ = 0, Im ω̄ < 0)."""
-    cdef double angle = carg(Om)
+    """ζ = √Ω on the sheet continuous with Im ω̄ > 0 (cut of the continuation along Re ω̄ = 0, Im ω̄ < 0).
+    On the real ω̄ axis the physical limit Im ω̄ → 0⁺ is taken (the original code jumped sheets there)."""
+    cdef double angle
+    if cimag(wbar) == 0.0:
+        Om = Om * (1.0 + 1e-300j * creal(wbar) / creal(Om)) if creal(Om) != 0.0 else Om
+        wbar = wbar + 1e-300j
+    angle = carg(Om)
     if angle < 0:
         angle = angle + 2 * M_PI
     cdef double complex z = -sqrt(cabs(Om)) * cexp(0.5j * angle)
@@ -620,6 +633,9 @@ cdef struct YP:
     double tolN
     int flag
     int neval
+    int npole           # near-real zeros of D_ISM(y) whose poles are subtracted analytically
+    double complex yp[2]
+    double complex Rp[2]
 
 
 cdef double complex D_ism_yp(YP* p, double complex y) nogil:
@@ -643,7 +659,73 @@ cdef double complex y_f(double t, void* vp) nogil:
     cdef double complex y = t + 1j * p.sgnA * p.eta * cos(t)
     cdef double complex dy = 1.0 - 1j * p.sgnA * p.eta * sin(t)
     cdef double complex D = D_ism_yp(p, y)
-    return (D - 1.0) / D * dy
+    cdef double complex f = (D - 1.0) / D
+    cdef double complex h
+    cdef int k
+    for k in range(p.npole):            # minus the periodic pole R ½cot((y − y_p)/2)
+        h = 0.5 * (y - p.yp[k])
+        f = f - p.Rp[k] * 0.5 * ccos(h) / csin(h)
+    return f * dy
+
+
+cdef double complex dD_dy(YP* p, double complex y) nogil:
+    """dD_ISM/dy by the fourth-order central difference (D_ISM is analytic in y)."""
+    cdef double h = 1e-3
+    return (-D_ism_yp(p, y + 2 * h) + 8 * D_ism_yp(p, y + h) - 8 * D_ism_yp(p, y - h)
+            + D_ism_yp(p, y - 2 * h)) / (12 * h)
+
+
+cdef void find_poles(YP* p, double dmax) nogil:
+    """Locate up to two zeros y_p of D_ISM(y) with |Im y_p| < 0.5 (Newton from the smallest sampled
+    |D_ISM| on a 24-point grid) and store the residues R = −1/D'(y_p) of (D − 1)/D."""
+    cdef double complex Dk[24]
+    cdef double ak[24]
+    cdef double complex y, D0, d1, step
+    cdef int k, j, it, m, kbest
+    cdef double best
+    cdef bint ok
+    p.npole = 0
+    for k in range(24):
+        Dk[k] = D_ism_yp(p, -M_PI + 2 * M_PI * k / 24.0)
+        ak[k] = cabs(Dk[k])
+    for m in range(2):
+        best = dmax
+        kbest = -1
+        for k in range(24):            # smallest local minimum not yet used
+            if ak[k] < best and ak[k] <= ak[(k + 1) % 24] and ak[k] <= ak[(k + 23) % 24]:
+                best = ak[k]
+                kbest = k
+        if kbest < 0:
+            return
+        ak[kbest] = 1e300
+        y = -M_PI + 2 * M_PI * kbest / 24.0
+        ok = False
+        for it in range(20):
+            D0 = D_ism_yp(p, y)
+            d1 = dD_dy(p, y)
+            if d1 == 0:
+                break
+            step = D0 / d1
+            y = y - step
+            if cabs(y) > 10.0:
+                break
+            if cabs(step) < 1e-13:
+                ok = True
+                break
+        if not ok or fabs(cimag(y)) > 0.5:
+            continue
+        while creal(y) > M_PI:
+            y = y - 2 * M_PI
+        while creal(y) <= -M_PI:
+            y = y + 2 * M_PI
+        for j in range(p.npole):
+            if cabs(y - p.yp[j]) < 1e-6:
+                ok = False
+        if not ok or cimag(y) == 0.0:
+            continue
+        p.yp[p.npole] = y
+        p.Rp[p.npole] = -1.0 / dD_dy(p, y)
+        p.npole += 1
 
 
 cdef double deformation(double complex omega, double A, double eta_max, int* pinch) nogil:
@@ -676,7 +758,7 @@ cdef double complex y_avg_one(double complex omega, double A, double wM, double 
                               double eta_par, double eta_prp, double delta_par, double delta_prp,
                               int form, int contour, double eta_fixed, double eta_max,
                               double epsabs, double epsrel, double tolN, bint asym, int limit,
-                              int* flag_out, long* nev_out) nogil:
+                              bint subtract_poles, int* flag_out, long* nev_out) nogil:
     cdef YP p
     cdef double pts[8]
     cdef int npts, ier = 0, pinch = 0, j, k
@@ -724,8 +806,14 @@ cdef double complex y_avg_one(double complex omega, double A, double wM, double 
                 pts[k + 1] = pts[k]
                 k = k - 1
             pts[k + 1] = tmp
-    res = adapt(y_f, &p, pts, npts, epsabs, epsrel, limit, &err, &ier, &p.neval) / (2 * M_PI)
-    flag_out[0] = p.flag | (4 if ier == 1 else 0) | (8 if pinch else 0)
+    p.npole = 0
+    if p.eta == 0.0 and subtract_poles:
+        find_poles(&p, 0.3)
+    res = adapt(y_f, &p, pts, npts, epsabs, epsrel, limit, &err, &ier, &p.neval)
+    for k in range(p.npole):            # ∫ over a period of ½cot((y − y_p)/2) = iπ sgn(Im y_p)
+        res = res + p.Rp[k] * 1j * M_PI * (1.0 if cimag(p.yp[k]) > 0 else -1.0)
+    res = res / (2 * M_PI)
+    flag_out[0] = p.flag | (4 if ier == 1 else 0) | (8 if pinch else 0) | (64 if p.npole > 0 else 0)
     nev_out[0] = p.neval
     return res
 
@@ -734,13 +822,14 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
               double tau=1.0, double eta_par=0.0, double eta_prp=0.0, double delta_par=0.0, double delta_prp=0.0,
               int form=0, int contour=0, double eta_fixed=0.0, double eta_max=2.0,
               double epsabs=1e-10, double epsrel=1e-10, double tolN=1e-12, bint asym=False,
-              int limit=200, int nthreads=1):
+              int limit=200, int nthreads=1, bint subtract_poles=True):
     """(1/2π) ∫ dy (D_ISM − 1)/D_ISM at each field-line point i (ω_E = −A_i sin y).
 
     contour: 0 real axis; 1 real axis with breakpoints where Re ω̄ = 0 (old-code behaviour);
              2 deformed y = t + i sgn(A) η cos t (η automatic for Im ω ≤ 0, or eta_fixed if > 0).
     Returns (values, flags, nevals); flag bits: 1 λ-quadrature limit, 2 continuation cancellation
-    above e^25, 4 y-quadrature limit, 8 branch points pinch the y contour.
+    above e^25, 4 y-quadrature limit, 8 branch points pinch the y contour, 64 near-real zeros of D_ISM
+    were found and their poles subtracted analytically (real contour only; subtract_poles).
     """
     cdef Py_ssize_t n = A.shape[0], i
     out = np.empty(n, dtype=np.complex128)
@@ -753,13 +842,13 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
         for i in range(n):
             out_v[i] = y_avg_one(omega, A[i], wM[i], b[i], tau, eta_par, eta_prp, delta_par, delta_prp,
                                  form, contour, eta_fixed, eta_max, epsabs, epsrel, tolN, asym, limit,
-                                 &flags_v[i], &nev_v[i])
+                                 subtract_poles, &flags_v[i], &nev_v[i])
     else:
         with nogil:
             for i in prange(n, schedule='dynamic', num_threads=nthreads):
                 out_v[i] = y_avg_one(omega, A[i], wM[i], b[i], tau, eta_par, eta_prp, delta_par, delta_prp,
                                      form, contour, eta_fixed, eta_max, epsabs, epsrel, tolN, asym, limit,
-                                     &flags_v[i], &nev_v[i])
+                                     subtract_poles, &flags_v[i], &nev_v[i])
     return out, flags, nev
 
 

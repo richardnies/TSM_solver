@@ -69,3 +69,38 @@ class Primary:
         else:
             f = CubicSpline(z, TP, bc_type="periodic" if periodic else "not-a-knot")
         return cls(f, Phi_P, name="tabulated")
+
+
+def stella_phiP(phiinit, y0, exb_nonlin_fac, fac_norm=1.0, den0=1.0, tite=1.0, b_P=0.0):
+    """Φ_P (amplitude of v_Ex in ρ_ref v_th/a, solver convention) of a stella `secondary = .true.` deck.
+
+    stella (stella_COPY/init_g.f90) initialises the primary Fourier coefficient at k_y^P = 1/y0 as
+    g = phiinit · φ0(z) · [den0 + tpar0(v∥² − ½) + tperp0(v⊥² − 1)] F_M with φ0 = exp(−(z/width0)²) and
+    freezes it; quasineutrality with modified-adiabatic electrons gives the potential coefficient
+    φ̂ = phiinit · φ0 · den0 Γ0(b_P)^{1/2}/(1 − Γ0(b_P) + 1/tite) (→ phiinit φ0 den0 for b_P → 0, tite = 1).
+    The real-space potential is 2|φ̂| cos(k_y y), and stella's radial E×B velocity is
+    exb_nonlin_fac · ∂_y φ (exb_nonlin_fac contains the ½ of v_th² = 2T/m). Hence
+
+        Φ_P T_P(z) = 2 exb_nonlin_fac k_y^P |φ̂(z)|,   T_P = φ0/fac_norm.
+
+    The historical drivers set Φ_P = k_y^P · phiinit · fac_norm, i.e. without 2·exb_nonlin_fac
+    (= 1/√(1−ε²) = 1.0166 for the CBC surface at ε = 0.18).
+    η∥ = tpar0/den0 and η⊥ = tperp0/den0.
+    """
+    from scipy.special import ive
+    g0 = ive(0, b_P)
+    qn = den0 * np.sqrt(g0) / (1 - g0 + 1.0 / tite) * (1.0 / tite)    # = den0 for b_P = 0
+    return 2.0 * exb_nonlin_fac * (1.0 / y0) * phiinit * fac_norm * qn
+
+
+def A_P(primary, geometry, rmaj=None):
+    """Paper eq. (21): A^P = √⟨(v_Ex R/(v_T ρ))²⟩_ψ, with ⟨·⟩_ψ over the field line and the primary
+    phase y (⟨sin² y⟩ = ½), R = rmaj (units of a) and ρ = ρ_ref (B = B_ref):
+
+        A^P = (R/a) Φ_P √(⟨T_P²⟩/2).
+
+    Note: the plot labels of the historical drivers are A_label = Φ_P/0.3557 with Φ_P the uncorrected
+    stella amplitude; for the CBC Gaussian primary A_label ≈ 1.37 × A^P(21) (README §Amplitude).
+    """
+    R = rmaj if rmaj is not None else geometry.rmaj
+    return R * primary.Phi_P * np.sqrt(geometry.average(lambda z: primary(z)**2) / 2.0)

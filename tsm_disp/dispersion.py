@@ -63,7 +63,7 @@ class DispersionRelation:
     def __init__(self, geometry, primary, *, tau=1.0, eta_par=0.0, eta_prp=0.0, delta_par=0.0,
                  delta_prp=0.0, form="lambda", y_contour="auto", epsabs=1e-10, epsrel=1e-10,
                  epsabs_y=None, epsrel_y=None, tolN=1e-12, nthreads=1, theta_panels=8,
-                 asymp_J11=False, eta_fixed=0.0, eta_max=2.0, limit=400, warn=True):
+                 asymp_J11=False, eta_fixed=0.0, eta_max=2.0, limit=400, warn=True, subtract_poles=True):
         self.geometry, self.primary = geometry, primary
         self.tau, self.eta_par, self.eta_prp = float(tau), float(eta_par), float(eta_prp)
         self.delta_par, self.delta_prp = float(delta_par), float(delta_prp)
@@ -77,6 +77,7 @@ class DispersionRelation:
         self.tolN, self.nthreads = tolN, nthreads
         self.theta_panels, self.asymp_J11 = theta_panels, asymp_J11
         self.eta_fixed, self.eta_max, self.limit, self.warn = eta_fixed, eta_max, limit, warn
+        self.subtract_poles = subtract_poles
         self.last = {}
 
     # -- local quantities -------------------------------------------------------------------------
@@ -98,7 +99,7 @@ class DispersionRelation:
         return _kernels.y_average(complex(omega), A, wM, b, self.tau, self.eta_par, self.eta_prp,
                                   self.delta_par, self.delta_prp, FORMS[self.form], self._contour(omega),
                                   self.eta_fixed, self.eta_max, self.epsabs_y, self.epsrel_y, self.tolN,
-                                  bool(self.asymp_J11), self.limit, self.nthreads)
+                                  bool(self.asymp_J11), 200, self.nthreads, bool(self.subtract_poles))
 
     def D_ism(self, omega, kx, z, y):
         """Local kinetic response D_ISM(z, y) (eq. 31)."""
@@ -141,13 +142,14 @@ class DispersionRelation:
             err = np.where((resasc > 0) & (err > 0), resasc * np.minimum(1.0, r**1.5), err)
         resabs = (np.abs(f) * _WK).sum(axis=1) * np.abs(h)
         err = np.maximum(err, 50 * np.finfo(float).eps * resabs)
-        return resk, err, int(np.bitwise_or.reduce(flags)), int(nev.sum())
+        self._resabs = resabs
+        return resk, err, int(np.bitwise_or.reduce(flags & ~64)), int(nev.sum())
 
     def D(self, omega, kx):
         """Dispersion function D(ω, k_x) (eq. 32). Roots D = 0 are the secondary modes."""
         panels = self._panels()
         vals, errs, flag, nev = self._eval_panels(omega, kx, panels)
-        vals, errs = list(vals), list(errs)
+        vals, errs, rabs = list(vals), list(errs), list(self._resabs)
         npan_eval = len(panels)
         while True:
             total = sum(vals)
@@ -158,9 +160,14 @@ class DispersionRelation:
             if len(panels) >= self.limit:
                 flag |= 16
                 break
-            # bisect every panel whose error exceeds its share, evaluating all new panels in one batch
+            # bisect every panel whose error exceeds its share (and is not at its round-off floor),
+            # evaluating all new panels in one batch
             share = tol / len(panels)
-            idx = [i for i, e in enumerate(errs) if e > share] or [int(np.argmax(errs))]
+            floor = [60 * np.finfo(float).eps * r for r in rabs]
+            idx = [i for i, e in enumerate(errs) if e > share and e > floor[i]]
+            if not idx:
+                flag |= 32
+                break
             new = []
             for i in idx:
                 a, b = panels[i]
@@ -171,10 +178,11 @@ class DispersionRelation:
             nev += n2
             npan_eval += len(new)
             for k, i in enumerate(sorted(idx, reverse=True)):
-                del panels[i], vals[i], errs[i]
+                del panels[i], vals[i], errs[i], rabs[i]
             panels += new
             vals += list(v2)
             errs += list(e2)
+            rabs += list(self._resabs)
         self.last = dict(err=errsum, flag=flag, nevals=nev, npanels=len(panels), npanels_evaluated=npan_eval)
         if flag and self.warn:
             warnings.warn("D(ω=%s, kx=%g): flags %d (%s)" % (omega, kx, flag, describe_flags(flag)), FlagWarning)
@@ -183,5 +191,6 @@ class DispersionRelation:
 
 def describe_flags(flag):
     names = {1: "λ-quadrature limit", 2: "continuation cancellation > e^25", 4: "y-quadrature limit",
-             8: "y branch points pinch the contour", 16: "field-line quadrature limit"}
+             8: "y branch points pinch the contour", 16: "field-line quadrature limit",
+             32: "field-line quadrature at round-off", 64: "near-real D_ISM zeros subtracted"}
     return ", ".join(v for k, v in names.items() if flag & k)

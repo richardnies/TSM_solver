@@ -12,20 +12,9 @@ vmec(...); from_stella_run(...).
 """
 from .base import Geometry, TabulatedGeometry
 from .analytic import CircularAnalytic, Uniform
+# imported eagerly so that importing a submodule cannot shadow the constructor of the same name
+from .miller import miller
+from .vmec import vmec                  # simsopt is imported inside vmec()
+from .stella_io import from_stella_run
 
-__all__ = ["Geometry", "TabulatedGeometry", "CircularAnalytic", "Uniform"]
-
-
-def miller(*args, **kwargs):
-    from .miller import miller as _m
-    return _m(*args, **kwargs)
-
-
-def vmec(*args, **kwargs):
-    from .vmec import vmec as _v
-    return _v(*args, **kwargs)
-
-
-def from_stella_run(*args, **kwargs):
-    from .stella_io import from_stella_run as _f
-    return _f(*args, **kwargs)
+__all__ = ["Geometry", "TabulatedGeometry", "CircularAnalytic", "Uniform", "miller", "vmec", "from_stella_run"]

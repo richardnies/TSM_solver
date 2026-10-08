@@ -71,3 +71,19 @@ def test_cauchy_integral_across_real_axis(form):
     pts = w0 + r * np.exp(2j * np.pi * np.arange(n) / n)
     mean = np.mean([d.D(p, 0.3) for p in pts])
     assert abs(mean - d.D(w0 + 1e-13j, 0.3)) < 1e-8
+
+
+@pytest.mark.fast
+def test_pole_subtraction_is_exact():
+    """Near-real zeros of D_ISM(y): subtracting their poles analytically leaves the y average unchanged."""
+    from tsm_disp.geometry import miller
+    gm = miller(rhoc=0.5, rmaj=2.77778, qinp=20.0, shat=0.8, zed_equal_arc=True)
+    z = np.linspace(-1.6, -1.2, 21)
+    out = []
+    for sp in (False, True):
+        d = DispersionRelation(gm, Primary.gaussian(0.36157), eta_par=3, eta_prp=3, form="lambda", epsabs=1e-9,
+                               epsrel=1e-9, nthreads=8, subtract_poles=sp)
+        v, f, n = d.y_average(0.0804 + 0.0296j, 0.1, z)
+        out.append((v, f))
+    assert np.all(out[1][1] & 64)                 # poles found at every node
+    assert np.max(np.abs(out[0][0] - out[1][0])) < 1e-10
