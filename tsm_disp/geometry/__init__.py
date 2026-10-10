@@ -7,14 +7,14 @@ coordinate z on [zmin, zmax]:
     kperp2_kx2(z)   |∇x|²/B², so that b = ½ k_x² kperp2_kx2 (local ρ ∝ 1/B)
     weight(z)       1/(B·∇z), normalised to ∫ weight dz = 1 (field-line / flux-surface average)
 
-Constructors: CircularAnalytic, Uniform (analytic); TabulatedGeometry (arrays); miller(...);
+Constructors: AnalyticGeometry, CircularAnalytic, Uniform (analytic); TabulatedGeometry (arrays); miller(...);
 vmec(...); from_stella_run(...).
 """
 from .base import Geometry, TabulatedGeometry
-from .analytic import CircularAnalytic, Uniform
+from .analytic import AnalyticGeometry, CircularAnalytic, Uniform
 # imported eagerly so that importing a submodule cannot shadow the constructor of the same name
 from .miller import miller
 from .vmec import vmec                  # simsopt is imported inside vmec()
 from .stella_io import from_stella_run
 
-__all__ = ["Geometry", "TabulatedGeometry", "CircularAnalytic", "Uniform", "miller", "vmec", "from_stella_run"]
+__all__ = ["Geometry", "TabulatedGeometry", "AnalyticGeometry", "CircularAnalytic", "Uniform", "miller", "vmec", "from_stella_run"]

@@ -20,10 +20,13 @@ def legacy_gaussian_norm(width=np.pi, center=0.0):
 class Primary:
     """Primary envelope T_P(z) (vectorised callable, real) and amplitude Φ_P."""
 
-    def __init__(self, T_P, Phi_P, name="callable"):
+    def __init__(self, T_P, Phi_P, name="callable", breakpoints=()):
+        """T_P: vectorised callable of the field-line angle (any analytic θ-variation); breakpoints: angles
+        where T_P is discontinuous or sharp, used as panel edges of the θ quadrature."""
         self.T_P = T_P
         self.Phi_P = float(Phi_P)
         self.name = name
+        self.breakpoints = [float(p) for p in breakpoints]
 
     def __call__(self, z):
         v = self.T_P(z)
@@ -36,6 +39,22 @@ class Primary:
     @classmethod
     def constant(cls, Phi_P):
         return cls(lambda z: 1.0, Phi_P, name="constant")
+
+    @classmethod
+    def top_hat(cls, theta_P, Delta_P, Phi_P):
+        """T_P = 1 for θ ∈ [θ^P − Δ^P/2, θ^P + Δ^P/2] (taken modulo 2π), 0 otherwise; 0 < Δ^P ≤ 2π.
+        The two edges are breakpoints of the θ quadrature."""
+        if not 0 < Delta_P <= 2 * np.pi:
+            raise ValueError("Delta_P must be in (0, 2π]")
+        th0, half = float(theta_P), 0.5 * float(Delta_P)
+
+        def T(z):
+            d = np.mod(np.asarray(z, float) - th0 + np.pi, 2 * np.pi) - np.pi      # θ − θ^P wrapped to [−π, π)
+            return (np.abs(d) <= half).astype(float) if Delta_P < 2 * np.pi else np.ones(np.shape(z))
+        edges = [] if Delta_P >= 2 * np.pi else [np.mod(th0 + s * half + np.pi, 2 * np.pi) - np.pi for s in (-1, 1)]
+        self = cls(T, Phi_P, name="top hat θP=%.3g ΔP=%.3g" % (th0, Delta_P), breakpoints=edges)
+        self.theta_P, self.Delta_P = th0, float(Delta_P)
+        return self
 
     @classmethod
     def gaussian(cls, Phi_P, width=np.pi, center=0.0, normalise="legacy"):

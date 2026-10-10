@@ -121,6 +121,7 @@ class DispersionRelation:
         c = getattr(self.primary, "center", None)
         if c is not None and g.zmin < c < g.zmax:
             extra.append(c)
+        extra += [p for p in getattr(self.primary, "breakpoints", []) if g.zmin < p < g.zmax]
         edges = np.unique(np.concatenate([edges, extra]))
         return list(zip(edges[:-1], edges[1:]))
 
