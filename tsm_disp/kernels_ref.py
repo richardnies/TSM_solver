@@ -105,3 +105,39 @@ def N_energy(omega, omegaE, omegaE_par, omegaE_prp, omegaM, b, tau=1.0, eta_par=
 
 def D_ism_from_N(N, b, tau):
     return (tau + 1 - gamma0(b) - N) / tau
+
+
+def _weight(C, vpar2, vprp2):
+    C = np.asarray(C)
+    return sum(C[n, m] * vpar2**n * vprp2**m for n in range(3) for m in range(3) if C[n, m] != 0)
+
+
+def moment_velocity(wbar, omegaM, b, C, jpow=2, vmax=8.0, eps=1e-12):
+    """∫d³v F_M J0^jpow Σ C[n,m] v∥^{2n} v⊥^{2m} / (ω̄ − ω_M (v∥² + v⊥²/2)), direct (v∥, v⊥) quadrature."""
+    def f(vp, vpar):
+        return (np.exp(-vpar**2 - vp**2) / np.pi**1.5 * 2 * np.pi * vp * j0(np.sqrt(2 * b) * vp)**jpow
+                * _weight(C, vpar**2, vp**2) / (wbar - omegaM * (vpar**2 + 0.5 * vp**2)))
+    re = dblquad(lambda vp, vpar: np.real(f(vp, vpar)), -vmax, vmax, 0, vmax, epsabs=eps, epsrel=eps)[0]
+    im = dblquad(lambda vp, vpar: np.imag(f(vp, vpar)), -vmax, vmax, 0, vmax, epsabs=eps, epsrel=eps)[0]
+    return re + 1j * im
+
+
+def moment_energy(wbar, omegaM, b, C, jpow=2, Emax=60.0, eps=1e-13):
+    """Energy-shell form of moment_velocity with the Landau continuation for Im ω̄ < 0 (resonant side)."""
+    def H(E):
+        sqE = np.sqrt(E + 0j)
+
+        def g(phi):
+            s, c = np.sin(phi), np.cos(phi)
+            vp = np.sqrt(2.0) * sqE * s
+            return (s * np.exp(-E * (1 + s**2)) * j0c(np.sqrt(2 * b + 0j) * vp)**jpow
+                    * _weight(C, E * c**2, 2 * E * s**2))
+        return 2 / np.sqrt(np.pi) * _cquad(g, 0, np.pi, epsabs=1e-14, epsrel=1e-13, limit=200)
+
+    Om = wbar / omegaM
+    pts = [p for p in (np.real(Om),) if 0 < p < Emax]
+    I = _cquad(lambda E: np.sqrt(E) * H(E) / (Om - E), 0, Emax, epsabs=eps, epsrel=eps, limit=400,
+               points=pts or None) / omegaM
+    if np.imag(wbar) < 0 and np.real(wbar) * omegaM > 0:
+        I += -np.sign(omegaM) * 2j * np.pi * np.sqrt(Om) * H(Om) / omegaM
+    return I

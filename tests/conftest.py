@@ -5,7 +5,26 @@ import numpy as np
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _kernels_importable():
+    try:
+        import tsm_disp._kernels  # noqa: F401
+        return True
+    except ImportError:
+        for m in [m for m in sys.modules if m == "tsm_disp" or m.startswith("tsm_disp.")]:
+            del sys.modules[m]
+        return False
+
+
+# Use the source tree if its extension is built in place (python setup.py build_ext --inplace, or
+# pip install -e .); otherwise make sure an uncompiled checkout does not shadow the installed package.
 sys.path.insert(0, ROOT)
+if not _kernels_importable():
+    sys.path[:] = [p for p in sys.path if os.path.abspath(p or os.curdir) != ROOT]
+    if not _kernels_importable():
+        raise ImportError("tsm_disp._kernels not found: run `pip install .` or `python setup.py build_ext --inplace`")
+    sys.path.append(ROOT)            # for the disp_rel compatibility shim at the repository root
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="tsm_disp")
 

@@ -1,9 +1,74 @@
-# tsm_disp — dispersion relation of toroidal secondary modes
+# TSM_solver
 
-Solver for the generalised secondary-mode dispersion relation of Nies & Parra, *Theory of zonal flow
-growth and propagation in toroidal geometry*, PPCF **68** (2026) 045028, in general flux-tube geometry
-(Miller, VMEC, or the geometry of a stella run). It replaces `../code_eval_disp_NEW`, which stays
-untouched as the reference implementation; `disp_rel.py` here is a drop-in replacement for old drivers.
+Solver for the dispersion relation of **toroidal secondary modes** (TSMs) and the other secondary
+instabilities of zonal flows: Nies & Parra, *Theory of zonal flow growth and propagation in toroidal
+geometry*, Plasma Phys. Control. Fusion **68** (2026) 045028. Given a frozen streamer primary mode
+(amplitude, temperature perturbations, variation along the field line) and a flux-tube geometry
+(Miller, VMEC, or the geometry of a stella run), it finds the complex frequency $\omega$ of the zonal
+secondary mode at radial wavenumber $k_x$. The Python package is called `tsm_disp`.
+
+![TSM frequency and growth rate against k_x, solver vs stella](examples/tsm_kx_scan.png)
+
+*The example below: circular Cyclone Base Case surface ($q = 20$), $\eta_\parallel = \eta_\perp = 3$,
+Gaussian primary; lines from this solver, crosses from stella gyrokinetic simulations of the same case.*
+
+## Installation
+
+Requirements: Python ≥ 3.8 and a C compiler (gcc, clang or Intel). Numpy, scipy and Cython (< 3) are
+installed automatically.
+
+```bash
+git clone https://github.com/richardnies/TSM_solver.git TSM_solver
+cd TSM_solver
+pip install ".[plot]"          # or: pip install -e ".[plot,test]" to develop and run the tests
+```
+
+Optional extras: `stella` (f90nml, netCDF4: read stella runs and decks), `vmec` (simsopt: VMEC
+equilibria), `plot` (matplotlib, for the examples), `test` (pytest, mpmath). The build uses OpenMP when
+the compiler supports `-fopenmp` and prints `building with OpenMP`; otherwise it runs single-threaded
+(Apple clang: install `libomp` or set `CC=gcc-13`). Without installing, `python setup.py build_ext --inplace`
+builds the extension inside the source tree.
+
+## Quickstart
+
+```bash
+python examples/tsm_kx_scan.py              # ~20 s on 32 cores, ~30 s on 8, a few minutes on 1
+```
+
+It follows the most unstable TSM from $k_x\rho_i = 0.5$ up to 0.8 and down to 0.1 and writes
+`examples/output/tsm_kx_scan.txt` ($k_x$, $\omega_r$, $\gamma$) and the figure above. Options:
+`--Phi-P` (primary amplitude), `--q`, `--kx-min/--kx-max/--dkx`, `--guess` (initial ω at `--kx-start`),
+`--nthreads`, `--tol`; see `--help`.
+
+The core of the example in a few lines:
+
+```python
+import numpy as np
+from tsm_disp.geometry import miller
+from tsm_disp.primary import Primary
+from tsm_disp.dispersion import DispersionRelation
+from tsm_disp.roots import find_root
+
+geo = miller(rhoc=0.5, rmaj=2.77778, qinp=20, shat=0.8, zed_equal_arc=True)   # flux tube
+pri = Primary.gaussian(Phi_P=0.723, width=np.pi)                                # frozen primary
+disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, nthreads=8)  # D(ω, k_x)
+root = find_root(lambda w: disp.D(w, 0.5), 0.58 + 0.29j)                        # D = 0 near a guess
+print(root.omega)            # ≈ 0.5808 + 0.2927j  (units v_th/a, v_th = √(2T/m))
+```
+
+**Mode structure.** `disp.mode_structure(omega, kx, quantity)` returns the eigenmode on the flux surface
+(field-line coordinate × primary phase y) for `quantity` = `"potential"` ($\hat\phi = \langle\phi\rangle_\psi/D_{\rm ISM}$),
+`"pressure"` ($\hat P = T\int d^3v\,(v_\parallel^2+v_\perp^2/2)/v_{th}^2\,\hat g$, paper eq. 38) or `"heat_flux"`
+($\hat Q_{NL} = v_{Ex}^P \hat P$, eq. 40, whose $y$ average carries the up–down asymmetry that drives the TSM),
+normalised to $Ze\langle\phi\rangle_\psi/T = 1$; `phi_average` = 1 checks that ω is a root.
+`python examples/mode_structure.py` plots all three for the example case.
+
+**Finding a first root.** Roots are followed by continuation, so a scan needs one good initial guess. Good
+guesses: for the TSM, $\omega_r \approx 2k_x\rho_i v_{th}/R$ with $\gamma$ a fraction of it; for the GAM
+($\Phi_P \to 0$), `tsm_disp.limits.omega_GAM(geo, kx)`; for the purely growing RDK mode (no drift),
+`limits.omega_RDK_smallb`. `find_root` returns `converged = False` when it fails; try another guess.
+Roots should not be trusted where `DispersionRelation.D_ism` vanishes on the surface (the paper's ISM
+region, where $D$ is not analytic).
 
 ## Equations
 
@@ -93,25 +158,29 @@ is `primary.A_P`. For the Gaussian CBC primary, $A^P = (R/a)\,\Phi_P\sqrt{\langl
 so a legacy label $\mathcal A$ corresponds to $A^P = 0.732\,\mathcal A$. The labels follow a different convention
 from eq. (21), and the paper's quoted values should be checked against it.
 
-## Usage
+## More usage
 
 ```python
-import numpy as np
-from tsm_disp.geometry import miller
-from tsm_disp.primary import Primary
-from tsm_disp.dispersion import DispersionRelation
-from tsm_disp.roots import find_root, scan_kx
+from tsm_disp.geometry import miller, vmec, from_stella_run, CircularAnalytic
+from tsm_disp.roots import scan_kx
 
-geo = miller(rhoc=0.5, rmaj=2.77778, qinp=20, shat=0.8, kappa=1.5, tri=0.3, zed_equal_arc=True)
-pri = Primary.gaussian(Phi_P=0.72, width=np.pi)
-disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, form="lambda", epsabs=1e-8, epsrel=1e-8, nthreads=32)
-root = find_root(lambda w: disp.D(w, 0.5), 0.58 + 0.29j)
-scan = scan_kx(disp, np.linspace(0.1, 1, 10), root.omega)
+geo = miller(rhoc=0.5, rmaj=2.77778, qinp=20, shat=0.8, kappa=1.5, kapprim=0.3, tri=0.3, triprim=0.5,
+             shift=-0.2, zed_equal_arc=True)                               # shaped Miller surface
+geo = from_stella_run("/path/to/stella/run")                                 # <run>.out.nc (or .geometry) + input
+geo = vmec("wout_precise_QH.nc", torflux=0.635, alpha0=-1.08, zeta_center=0.39,
+           nfield_periods=1.45, nzed=1024)                                   # needs simsopt
+geo = CircularAnalytic()                                                     # the model of the original code
+
+disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, form="lambda",  # or form="Z" (small b, fast)
+                          epsabs=1e-8, epsrel=1e-8, nthreads=32)
+scan = scan_kx(disp, np.linspace(0.1, 1, 10), root.omega)                   # continuation in k_x
+disp.D_ism(omega, kx, z, y)                                                  # local response, eq. (31)
+from tsm_disp.primary import stella_phiP, A_P                                # amplitude conversions
 ```
 
-Old drivers: replace their `sys.path.append(.../code_eval_disp_NEW)` by this directory. The shim accepts the
-old keywords (also `omegaN=`); `a_int`, `Nintegrate`, `tol_adaptive`, `sing_ITG` are ignored. Set
-`TSM_DISP_NTHREADS` to use OpenMP threads.
+**Drivers of the original code** (`code_eval_disp_NEW/disp_rel.py`): point their `sys.path.append(...)` to
+this repository; `disp_rel.py` here accepts the old function names and keywords (also `omegaN=`;
+`a_int`, `Nintegrate`, `tol_adaptive`, `sing_ITG` are ignored). Set `TSM_DISP_NTHREADS` for OpenMP threads.
 
 ## Build and test
 
@@ -175,4 +244,4 @@ stella's RDK mode is not reproduced, as parallel streaming (neglected in the the
 
 `tsm_disp/_kernels.pyx` (compiled kernels), `kernels_ref.py` (reference quadratures for tests),
 `dispersion.py`, `roots.py`, `limits.py`, `primary.py`, `geometry/`; `tests/`; `benchmarks/stella_cbc/`
-(stella comparison), `benchmarks/decks/` (shaped-Miller decks), `benchmarks/timing.py`; `scripts/`.
+(stella comparison), `benchmarks/decks/` (shaped-Miller decks), `benchmarks/timing.py`; `examples/`; `scripts/`.

@@ -27,6 +27,7 @@ def vmec(wout, *, torflux=None, s=None, alpha0=0.0, zeta_center=0.0, nfield_peri
     gpar_phi = fl.gradpar_phi[0, 0]
     gds22 = fl.gds22[0, 0]
     gb0 = fl.gbdrift0[0, 0]
+    gb, cv = fl.gbdrift[0, 0], fl.cvdrift[0, 0]
     shat = float(fl.shat[0])
     q = 1.0 / float(fl.iota[0])
     dz_dzeta = nfp / nfield_periods
@@ -41,15 +42,23 @@ def vmec(wout, *, torflux=None, s=None, alpha0=0.0, zeta_center=0.0, nfield_peri
         zeta_of_z = CubicSpline(zarc, zeta)(zgrid)
         fl2 = vmec_fieldlines(vs, s, alpha0, phi1d=zeta_of_z, phi_center=0.0)
         bmag, gds22, gb0 = fl2.bmag[0, 0], fl2.gds22[0, 0], fl2.gbdrift0[0, 0]
+        gb, cv = fl2.gbdrift[0, 0], fl2.cvdrift[0, 0]
         gradpar = np.full_like(zgrid, 2 * np.pi / L)
         z = zgrid
+        zeta = zeta_of_z
     else:
         z = (zeta - zeta_center) * dz_dzeta
         gradpar = gpar_phi / dz_dzeta
+        f = 1.0 / gpar_phi
+        arc = np.concatenate([[0.0], np.cumsum(0.5 * (f[1:] + f[:-1]) * np.diff(zeta))])
+        L = arc[-1]
     geo = TabulatedGeometry(z, bmag, gradpar, gds22, gb0, shat, q=q, eps=None, rmaj=None,
                             exb_nonlin_fac=0.5, periodic=False,
                             name="vmec %s s=%g alpha0=%g zeta_c=%g nfp_tube=%g" % (str(wout).split('/')[-1], s, alpha0,
                                                                                   zeta_center, nfield_periods))
+    # k_y ≠ 0 drifts (not used by the solver) and the field-line length, for diagnostics:
+    # stella's ω_d,y contains ½ k_y (cvdrift v∥² + gbdrift v⊥²/2), so v_My = gbdrift/2 when cvdrift = gbdrift
+    geo.extra = dict(gbdrift=np.asarray(gb), cvdrift=np.asarray(cv), zeta=np.asarray(zeta), length=float(L))
     geo.params = dict(wout=str(wout), s=s, alpha0=alpha0, zeta_center=zeta_center, nfield_periods=nfield_periods,
                       nfp=nfp, iota=1 / q)
     return geo

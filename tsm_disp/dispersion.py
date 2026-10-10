@@ -194,3 +194,68 @@ def describe_flags(flag):
              8: "y branch points pinch the contour", 16: "field-line quadrature limit",
              32: "field-line quadrature at round-off", 64: "near-real D_ISM zeros subtracted"}
     return ", ".join(v for k, v in names.items() if flag & k)
+
+
+QUANTITIES = ("potential", "pressure", "heat_flux")
+
+
+class ModeStructure:
+    """Structure of a secondary mode on the flux surface, f(z, y) e^{i k_x x − iωt}.
+
+    Attributes: z (field-line coordinate), y (primary phase, y = k_y^P × binormal coordinate),
+    field (complex, shape (nz, ny)), y_average ⟨f⟩_y(z), quantity, omega, kx, and
+    phi_average = ⟨φ̂⟩_ψ (= 1 at an exact root of D, a check of the root).
+    Normalisation: Z e ⟨φ⟩_ψ/T = 1. Units: φ̂ in T/(Ze); P̂ in n T; Q̂_NL in n T ρ_ref v_th/a.
+    """
+
+    def __init__(self, z, y, field, quantity, omega, kx, weight, phi_average):
+        self.z, self.y, self.field, self.quantity = z, y, field, quantity
+        self.omega, self.kx, self.phi_average = omega, kx, phi_average
+        self.weight = weight
+        self.y_average = field.mean(axis=1)            # uniform periodic y grid: trapezoid = mean
+
+    def real_space(self, x=0.0, t=0.0):
+        """Re[f(z, y) e^{i k_x x − iωt}] on the (z, y) grid."""
+        return np.real(self.field * np.exp(1j * self.kx * x - 1j * self.omega * t))
+
+    def flux_surface_average(self):
+        """⟨f⟩_ψ = ∫ w(z) ⟨f⟩_y dz (trapezoid on the z grid)."""
+        return np.trapz(self.weight * self.y_average, self.z)
+
+
+def _mode_structure(self, omega, kx, quantity="potential", nz=129, ny=128, z=None, y=None):
+    """Mode structure of the secondary at (ω, k_x) on the flux surface; quantity is one of
+
+    'potential' : φ̂(z, y) = ⟨φ⟩_ψ / D_ISM(z, y)                         (quasineutrality, eq. 29)
+    'pressure'  : P̂ = T ∫d³v (v∥² + v⊥²/2)/v_th² ĝ                       (paper eq. 38)
+    'heat_flux' : Q̂_NL = v_Ex^P P̂, the radial E×B flux of P by the primary (paper eq. 40);
+                  its y average carries the up–down asymmetry that drives the TSM.
+
+    ĝ = J0 F_M φ̂ (ω1 + 2ω2 v∥² + ω3 v⊥²)/(ω̄ − ω_M E) is the gyrocenter response (paper eq. 28).
+    The moments are always evaluated in the λ form (exact FLR); φ̂ uses the form of this object.
+    ω should be a root (D(ω, k_x) ≈ 0): then ⟨φ̂⟩_ψ = 1, reported as `phi_average`.
+    """
+    if quantity not in QUANTITIES:
+        raise ValueError("quantity must be one of %s" % (QUANTITIES,))
+    g = self.geometry
+    z = np.linspace(g.zmin, g.zmax, nz) if z is None else np.asarray(z, float)
+    y = np.linspace(-np.pi, np.pi, ny, endpoint=False) if y is None else np.asarray(y, float)
+    A, wM, b = self._local(z, kx)
+    phi, P, flags = _kernels.mode_fields(complex(omega), A, wM, b, np.ascontiguousarray(y), self.tau,
+                                         self.eta_par, self.eta_prp, self.delta_par, self.delta_prp,
+                                         FORMS[self.form], self.tolN, quantity != "potential", self.nthreads)
+    w = g.weight(z)
+    phi_avg = np.trapz(w * phi.mean(axis=1), z)
+    if quantity == "potential":
+        f = phi
+    elif quantity == "pressure":
+        f = P
+    else:
+        vEx = -(A / kx)[:, None] * np.sin(y)[None, :]          # v_Ex^P = −Φ_P T_P(z) sin y
+        f = vEx * P
+    if np.any(flags & 3) and self.warn:
+        warnings.warn("mode_structure: velocity-integral flags %d" % np.bitwise_or.reduce(flags.ravel()), FlagWarning)
+    return ModeStructure(z, y, f, quantity, omega, kx, w, phi_avg)
+
+
+DispersionRelation.mode_structure = _mode_structure

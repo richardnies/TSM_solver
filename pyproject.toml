@@ -1,0 +1,5 @@
+[build-system]
+# scipy: the kernels cimport scipy.special.cython_special (Faddeeva w and Bessel I)
+# Cython < 3: Cython 3 changed the exception semantics of the nogil function pointers in _kernels.pyx
+requires = ["setuptools>=42", "wheel", "Cython>=0.29.21,<3", "scipy>=1.6"]
+build-backend = "setuptools.build_meta"

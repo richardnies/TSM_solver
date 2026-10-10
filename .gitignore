@@ -10,3 +10,8 @@ build/
 *.png
 !benchmarks/*.pdf
 !benchmarks/*.png
+!benchmarks/stella_cbc/*.png
+!examples/*.png
+.venv/
+dist/
+examples/output/

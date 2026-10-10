@@ -230,20 +230,55 @@ cdef struct LamP:
     double complex pref      # multiplies the integrand on this leg (e^{iλ0 ω̄} when factored out)
     double complex rot       # e^{-iβ}: rotates the sqrt cut to the direction e^{i(β+π)}
     double complex rothalf   # e^{iβ/2}
+    int mom                  # 0: the response N; 1: general moment with weights C (below)
+    int jpow                 # number of Bessel factors J0 in the general moment (1 or 2)
+    double complex C[3][3]   # C[n][m] multiplies v∥^{2n} v⊥^{2m} (normalised by v_th)
 
 
-cdef double complex lam_f(double x, void* vp) nogil:
-    cdef LamP* p = <LamP*> vp
-    cdef double complex lam = p.lam0 + p.dirn * x
+cdef double CPAR[3]
+CPAR[:] = [1.0, 0.5, 0.75]       # ∫ e^{-v²} v^{2n} dv/√π = Γ(n+½)/Γ(½)
+
+
+cdef inline double complex lam_bracket(LamP* p, double complex lam) nogil:
+    """λ-space transform of ∫d³v F_M J0^j e^{−iλω_M(v∥²+v⊥²/2)} × weights, i.e. the integrand of
+    N = −i ∫dλ e^{iλω̄} (bracket). Parallel part: c_n (1+iλω_M)^{−½−n}; perpendicular part:
+    P_m = (−d/ds)^m P_0(s), s = 1 + ½iλω_M, P_0 = e^{−b/s} I0(b/s)/s (J0²) or e^{−b/2s}/s (J0)."""
     cdef double complex il = 1j * lam * p.wM
     cdef double complex d1 = 1.0 / (1.0 + 0.5 * il)
     cdef double complex d2 = 1.0 / (1.0 + il)
     cdef double complex sq = 1.0 / (p.rothalf * csqrt((1.0 + il) * p.rot))
     cdef double complex bh = p.b * d1
-    cdef double complex g0, g0p
-    gamma0_both(bh, &g0, &g0p)
-    return (-1j * p.pref * cexp(1j * (lam - p.lam0) * p.wbar) * sq * d1
-            * (g0 * (p.w1 + p.w2 * d2 + p.w3 * d1) + bh * g0p * p.w3 * d1) * p.dirn)
+    cdef double complex g0, g0p, u, e, P[3], acc, d2n
+    cdef int n, m
+    if p.mom == 0:
+        gamma0_both(bh, &g0, &g0p)
+        return sq * d1 * (g0 * (p.w1 + p.w2 * d2 + p.w3 * d1) + bh * g0p * p.w3 * d1)
+    if p.jpow == 2:
+        gamma0_both(bh, &g0, &g0p)
+        u = bh
+        P[0] = d1 * g0
+        P[1] = d1 * d1 * (g0 + u * g0p)
+        P[2] = d1 * d1 * d1 * (2 * g0 - u * g0 + 3 * u * g0p - 2 * u * u * g0p)
+    else:
+        u = 0.5 * bh
+        e = cexp(-u)
+        P[0] = d1 * e
+        P[1] = d1 * d1 * e * (1 - u)
+        P[2] = d1 * d1 * d1 * e * (2 - 4 * u + u * u)
+    acc = 0.0
+    d2n = 1.0
+    for n in range(3):
+        for m in range(3):
+            if p.C[n][m] != 0:
+                acc = acc + p.C[n][m] * CPAR[n] * d2n * P[m]
+        d2n = d2n * d2
+    return sq * acc
+
+
+cdef double complex lam_f(double x, void* vp) nogil:
+    cdef LamP* p = <LamP*> vp
+    cdef double complex lam = p.lam0 + p.dirn * x
+    return -1j * p.pref * cexp(1j * (lam - p.lam0) * p.wbar) * lam_bracket(p, lam) * p.dirn
 
 
 cdef double complex leg(LamP* p, double x0, double x1, double* brk, int nbrk,
@@ -277,14 +312,7 @@ cdef double complex lam_g(double s, void* vp) nogil:
     """Ray integrand divided by e^{-s} (for Gauss–Laguerre); the ray is λ = lam0 + i s/ω̄."""
     cdef LamP* p = <LamP*> vp
     cdef double complex lam = p.lam0 + p.dirn * s
-    cdef double complex il = 1j * lam * p.wM
-    cdef double complex d1 = 1.0 / (1.0 + 0.5 * il)
-    cdef double complex d2 = 1.0 / (1.0 + il)
-    cdef double complex sq = 1.0 / (p.rothalf * csqrt((1.0 + il) * p.rot))
-    cdef double complex bh = p.b * d1
-    cdef double complex g0, g0p
-    gamma0_both(bh, &g0, &g0p)
-    return (-1j * p.pref * sq * d1 * (g0 * (p.w1 + p.w2 * d2 + p.w3 * d1) + bh * g0p * p.w3 * d1) * p.dirn)
+    return -1j * p.pref * lam_bracket(p, lam) * p.dirn
 
 
 cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval, bint principal=False) nogil:
@@ -358,6 +386,12 @@ cdef double ray_growth(double complex Om, double b) nogil:
 
 cdef double complex N_lambda(double complex wbar, double complex w1, double complex w2, double complex w3,
                              double wM, double b, double tol, int* flag, int* neval) nogil:
+    return N_lambda_gen(wbar, w1, w2, w3, wM, b, tol, flag, neval, 0, 2, NULL)
+
+
+cdef double complex N_lambda_gen(double complex wbar, double complex w1, double complex w2, double complex w3,
+                                 double wM, double b, double tol, int* flag, int* neval,
+                                 int mom, int jpow, double complex* C) nogil:
     """N for any complex wbar (physical sheet Im wbar > 0; Landau continuation below).
 
     Contours in λ (singularities at λ = i/ωM: square root; λ = 2i/ωM: essential, from Γ0(b̃)):
@@ -373,18 +407,24 @@ cdef double complex N_lambda(double complex wbar, double complex w1, double comp
     cdef double complex Om, g0, g0p, sk
     cdef double sg, c, a, H, ca, ch, q
     cdef double brk[4]
-    cdef int ier = 0
+    cdef int ier = 0, i, j
     cdef double complex res = 0.0
-    if wM == 0.0:
-        gamma0_both(b, &g0, &g0p)
-        return (g0 * (w1 + w2 + w3) + b * g0p * w3) / wbar
-    sg = 1.0 if wM > 0 else -1.0
+    p.mom = mom
+    p.jpow = jpow
+    for i in range(3):
+        for j in range(3):
+            p.C[i][j] = C[3 * i + j] if mom else 0.0
     p.wbar = wbar
     p.w1 = w1
     p.w2 = w2
     p.w3 = w3
     p.wM = wM
     p.b = b
+    if wM == 0.0:                                  # no drift: N = (bracket at λ = 0)/ω̄
+        p.rot = 1.0
+        p.rothalf = 1.0
+        return lam_bracket(&p, 0.0) / wbar
+    sg = 1.0 if wM > 0 else -1.0
     p.rot = -1j * sg                               # e^{-iβ}, β = sg π/2: sqrt cut along −i sg
     p.rothalf = (1.0 + 1j * sg) / sqrt(2.0)        # e^{iβ/2}
     Om = wbar / wM
@@ -587,6 +627,19 @@ def N_lambda_py(double complex omega, double complex oE, double complex oEpar, d
     cdef int flag = 0, neval = 0
     cdef double complex N = N_lambda(wbar, w1, w2, w3, wM, b, tol, &flag, &neval)
     return N, flag, neval
+
+
+def moment_py(double complex omega, double complex oE, double complex oEpar, double complex oEprp,
+              double wM, double b, C, int jpow=2, double tol=1e-12):
+    """∫d³v F_M J0^jpow (Σ C[n][m] v∥^{2n} v⊥^{2m}) / (ω̄ − ω_M(v∥² + v⊥²/2)), ω̄ = ω − ω_E (λ form,
+    any ω̄; Landau continuation for Im ω̄ < 0). C: 3×3 array. Returns (value, flag, nevals)."""
+    cdef double complex Cc[9]
+    cdef int i, flag = 0, neval = 0
+    Ca = np.asarray(C, dtype=complex).reshape(9)
+    for i in range(9):
+        Cc[i] = Ca[i]
+    cdef double complex v = N_lambda_gen(omega - oE, 0, 0, 0, wM, b, tol, &flag, &neval, 1, jpow, Cc)
+    return v, flag, neval
 
 
 def N_Z_py(double complex omega, double complex oE, double complex oEpar, double complex oEprp,
@@ -850,6 +903,70 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
                                      form, contour, eta_fixed, eta_max, epsabs, epsrel, tolN, asym, limit,
                                      subtract_poles, &flags_v[i], &nev_v[i])
     return out, flags, nev
+
+
+cdef void point_fields(double complex omega, double complex y, double A, double wM, double b, double tau,
+                       double ap, double aq, double dpar, double dprp, int form, double tolN,
+                       bint want_P, double complex* phi, double complex* P, int* flag) nogil:
+    """φ̂ = ⟨φ⟩/D_ISM (with ⟨φ⟩ = 1) and the paper's pressure moment P̂ = T∫d³v (v∥²+v⊥²/2)/v_th² ĝ
+    (eq. 38, gyrocenter ĝ = J0 F_M φ̂ (ω1 + 2ω2 v∥² + ω3 v⊥²)/(ω̄ − ω_M E))."""
+    cdef YP p
+    cdef double complex oE, oEpar, oEprp, w1, w2, w3, D
+    cdef double complex C[9]
+    cdef int neval = 0, k
+    p.omega = omega
+    p.A = A
+    p.wM = wM
+    p.b = b
+    p.g0b = sp_ive(0.0, b)
+    p.tau = tau
+    p.ap = ap
+    p.aq = aq
+    p.dpar = dpar
+    p.dprp = dprp
+    p.form = form
+    p.asym = 0
+    p.tolN = tolN
+    p.flag = 0
+    p.neval = 0
+    D = D_ism_yp(&p, y)
+    phi[0] = 1.0 / D
+    flag[0] = p.flag
+    if not want_P:
+        return
+    oE = -A * csin(y)
+    oEpar = -A * csin(y + dpar)
+    oEprp = -A * csin(y + dprp)
+    w1 = tau * (-oE + 0.5 * ap * oEpar + aq * oEprp)
+    w2 = 0.5 * (wM - tau * ap * oEpar)
+    w3 = 0.5 * wM - tau * aq * oEprp
+    for k in range(9):
+        C[k] = 0.0
+    C[3] = w1                  # v∥²        (n=1, m=0)
+    C[1] = 0.5 * w1            # v⊥²        (n=0, m=1)
+    C[6] = 2 * w2              # v∥⁴        (n=2, m=0)
+    C[4] = w2 + w3             # v∥² v⊥²    (n=1, m=1)
+    C[2] = 0.5 * w3            # v⊥⁴        (n=0, m=2)
+    P[0] = phi[0] * N_lambda_gen(omega - oE, 0, 0, 0, wM, b, tolN, flag, &neval, 1, 1, C)
+
+
+def mode_fields(double complex omega, double[::1] A, double[::1] wM, double[::1] b, double[::1] y,
+                double tau=1.0, double eta_par=0.0, double eta_prp=0.0, double delta_par=0.0,
+                double delta_prp=0.0, int form=0, double tolN=1e-10, bint want_P=True, int nthreads=1):
+    """φ̂ and P̂ on the grid (field-line points i) × (primary phase y_j); returns (phi, P, flags)."""
+    cdef Py_ssize_t nz = A.shape[0], ny = y.shape[0], i, j
+    phi = np.zeros((nz, ny), dtype=np.complex128)
+    P = np.zeros((nz, ny), dtype=np.complex128)
+    flags = np.zeros((nz, ny), dtype=np.int32)
+    cdef double complex[:, ::1] phv = phi
+    cdef double complex[:, ::1] Pv = P
+    cdef int[:, ::1] fv = flags
+    with nogil:
+        for i in prange(nz, schedule='dynamic', num_threads=nthreads if nthreads > 0 else 1):
+            for j in range(ny):
+                point_fields(omega, y[j], A[i], wM[i], b[i], tau, eta_par, eta_prp, delta_par, delta_prp,
+                             form, tolN, want_P, &phv[i, j], &Pv[i, j], &fv[i, j])
+    return phi, P, flags
 
 
 def D_ism_py(double complex omega, double complex y, double A, double wM, double b, double tau=1.0,
