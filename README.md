@@ -145,8 +145,9 @@ vectorised callable of θ; list discontinuities or sharp features in `breakpoint
 the θ integral). `Primary.top_hat(theta_P, Delta_P, Phi_P)` is 1 for $`|\theta-\theta^P| \le \Delta^P/2`$
 (modulo 2π) and 0 otherwise. `python examples/top_hat_primary.py` (≈ 20 s on 32 cores) follows the TSM in
 $`k_x`$ for $`v_{Mx} = \sin\theta`$, $`|\nabla x| = 1`$ and a top-hat primary ($`\theta^P = 0`$, $`\Delta^P = \pi`$,
-$`\Phi_P = 3`$ by default; `--theta-P`, `--Delta-P`, `--Phi-P`, `--guess` to change them) until the root reaches
-the ISM region:
+$`\Phi_P = 3`$ by default; `--theta-P`, `--Delta-P`, `--Phi-P`, `--guess` to change them, or `--Q`, `--ky-P`,
+`--delta` to set the amplitude by the primary heat flux, e.g. `--Q 9708 --ky-P 0.001 --delta 0.5` for $`\Phi_P = 3`$)
+until the root reaches the ISM region:
 
 ![TSM for v_Mx = sin θ, |∇x| = 1 and a top-hat primary](examples/top_hat_primary.png)
 

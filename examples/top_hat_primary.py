@@ -10,6 +10,7 @@ Run (≈ 20 s on 32 cores, a few minutes on 1):
 
     python examples/top_hat_primary.py                                  # θ^P = 0, Δ^P = π, Φ_P = 3
     python examples/top_hat_primary.py --theta-P 0.6 --Delta-P 1.2 --Phi-P 6 --guess 1.311+0.925j
+    python examples/top_hat_primary.py --Q 9708 --ky-P 0.001 --delta 0.5    # amplitude from the heat flux (Φ_P = 3)
     python examples/top_hat_primary.py --help
 
 Writes examples/output/top_hat_primary.{txt,png,pdf}. Units: k_x in 1/ρ, ω in v_th/a (lengths in a, so
@@ -76,6 +77,15 @@ def main():
     ap.add_argument("--theta-P", type=float, default=0.0, help="centre θ^P of the top hat")
     ap.add_argument("--Delta-P", type=float, default=np.pi, help="width Δ^P of the top hat (≤ 2π)")
     ap.add_argument("--Phi-P", type=float, default=3.0, help="primary E×B amplitude Φ_P (ρ v_th/a)")
+    ap.add_argument("--Q", type=float, default=None,
+                    help="set the amplitude instead by the primary's ion heat flux in stella's gyro-Bohm units "
+                         "(needs --delta ≠ 0 and --ky-P; see tsm_disp.primary.heat_flux_stella)")
+    ap.add_argument("--ky-P", type=float, default=1e-3, help="primary binormal wavenumber (for --Q; stella 1/y0)")
+    ap.add_argument("--delta", type=float, default=0.0,
+                    help="phase Δ∥ = Δ⊥ of the primary temperature relative to φ (stella: −den0_phase)")
+    ap.add_argument("--grho", type=float, default=1.0, help="|∇ρ| for the flux normalisation (for --Q)")
+    ap.add_argument("--exb-nonlin-fac", type=float, default=0.5,
+                    help="stella's exb_nonlin_fac relating φ to v_Ex (for --Q; ½ for dx/dψ dy/dα = 1)")
     ap.add_argument("--kx-min", type=float, default=0.05)
     ap.add_argument("--kx-max", type=float, default=1.0)
     ap.add_argument("--dkx", type=float, default=0.05)
@@ -87,11 +97,16 @@ def main():
     a = ap.parse_args()
 
     # 1. geometry from functions of θ: v_Mx = sin θ, |∇x| = 1 (B = 1, uniform weight by default)
-    geo = AnalyticGeometry(vMx=np.sin, gradx=1.0)
+    geo = AnalyticGeometry(vMx=np.sin, gradx=1.0, grho=a.grho, exb_nonlin_fac=a.exb_nonlin_fac, sign_torflux=-1)
     # 2. primary: v_Ex = −Φ_P T_P(θ) sin y with T_P the top hat
     pri = Primary.top_hat(a.theta_P, a.Delta_P, a.Phi_P)
+    if a.Q is not None:          # amplitude from the primary heat flux (stella's qflx normalisation)
+        pri = pri.with_heat_flux(a.Q, geo, a.ky_P, eta_par=3.0, eta_prp=3.0, delta_par=a.delta, delta_prp=a.delta)
+        a.Phi_P = pri.Phi_P
+        print("Q = %g, k_y^P = %g, Δ = %g  ->  Phi_P = %.5f" % (a.Q, a.ky_P, a.delta, a.Phi_P))
     # 3. dispersion relation (λ form: exact finite-Larmor-radius effects)
-    disp = DispersionRelation(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, form="lambda",
+    disp = DispersionRelation(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, delta_par=a.delta, delta_prp=a.delta,
+                              form="lambda",
                               epsabs=a.tol, epsrel=a.tol, nthreads=a.nthreads, warn=False)
 
     # 4. root at kx-start, then continuation up and down in k_x
@@ -109,7 +124,9 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     np.savetxt(os.path.join(a.out, "top_hat_primary.txt"), np.c_[kx, omega.real, omega.imag],
                header="kx*rho  omega_r*a/v_th  gamma*a/v_th\nvMx = sin(theta), |grad x| = 1, top-hat primary "
-                      "theta_P=%g Delta_P=%g Phi_P=%g, eta_par=eta_prp=3, tau=1" % (a.theta_P, a.Delta_P, a.Phi_P))
+                      "theta_P=%g Delta_P=%g Phi_P=%g, eta_par=eta_prp=3, Delta=%g, tau=1%s"
+                      % (a.theta_P, a.Delta_P, a.Phi_P, a.delta,
+                         "" if a.Q is None else ", from Q=%g at ky_P=%g" % (a.Q, a.ky_P)))
     plot(kx, omega, geo, pri, a)
     print("wrote %s/top_hat_primary.{txt,png,pdf} (%.0f s)" % (a.out, time.time() - t0))
 
@@ -137,7 +154,12 @@ def plot(kx, omega, geo, pri, a):
     axs[2].set_xlim(-np.pi, np.pi)
     axs[2].legend(fontsize=20, loc="lower right")
     axs[0].set_title(r"$v_{Mx} = \sin\theta$, $|\nabla x| = 1$, $\eta_\parallel = \eta_\perp = 3$")
-    axs[1].set_title(r"top hat $\theta^P = %.3g$, $\Delta^P = %.3g$, $\Phi_P = %g$" % (a.theta_P, a.Delta_P, a.Phi_P))
+    amp = (r"$\Phi_P = %.3g$" % a.Phi_P if a.Q is None
+           else r"$Q = %g$ ($k_y^P = %g$, $\Phi_P = %.3g$)" % (a.Q, a.ky_P, a.Phi_P))
+    axs[1].set_title(r"top hat $\theta^P = %.3g$, $\Delta^P = %.3g$, " % (a.theta_P, a.Delta_P) + amp, fontsize=20)
+    if a.delta:
+        axs[0].set_title(r"$v_{Mx} = \sin\theta$, $|\nabla x| = 1$, $\eta_\parallel = \eta_\perp = 3$, "
+                         r"$\Delta = %g$" % a.delta, fontsize=22)
     axs[2].set_title(r"assumed along $\theta$")
     fig.tight_layout()
     stamp = "%s  ·  made by examples/top_hat_primary.py %s" % (os.path.abspath(a.out), " ".join(sys.argv[1:]))
