@@ -25,6 +25,32 @@ def test_miller_port_vs_stella_miller_output():
 
 @needs(MILLER_RUN)
 @pytest.mark.fast
+def test_miller_binormal_quantities_vs_stella():
+    """k_y ≠ 0 geometry (finite-k_y solver): gds2, gds21, gbdrift, cvdrift and the field-line-label integrals."""
+    import f90nml
+    nml = f90nml.read(MILLER_RUN + "/CBC.in")["millergeo_parameters"]
+    a = miller_arrays(**{k: nml[k] for k in ("rhoc", "rmaj", "rgeo", "qinp", "shat", "kappa", "nzed_local")})
+    cols = open(MILLER_RUN + "/geometry_miller.CBC.output").readlines()[1].split()
+    name = {c.split(".", 1)[1]: i for i, c in enumerate(cols)}
+    dat = np.loadtxt(MILLER_RUN + "/geometry_miller.CBC.output", skiprows=2)
+    for k in ("varthet", "dvarthdr", "gds2", "gds21", "gbdrift", "cvdrift"):
+        assert np.max(np.abs(a[k] - dat[:, name[k]])) < 1e-8          # e18.9 output
+    # ŝ-free forms agree with the ratios the solvers used before
+    assert np.max(np.abs(a["gxx"] - a["gds22"] / nml["shat"]**2)) < 1e-12 * np.max(a["gxx"])
+    assert np.max(np.abs(a["vmx"] - a["gbdrift0"] / (2 * nml["shat"]))) < 1e-12 * np.max(np.abs(a["vmx"]))
+    assert np.max(np.abs(a["gxy"] - a["gds21"] / nml["shat"])) < 1e-12 * np.max(np.abs(a["gxy"]))
+
+
+@pytest.mark.fast
+def test_shear_free_miller_is_periodic_and_finite():
+    g = miller(rhoc=0.5, rmaj=2.77778, rgeo=2.77778, qinp=2.8, shat=0.0, zed_equal_arc=True)
+    z = np.linspace(-np.pi, np.pi, 33)
+    assert g.binormal_periodic() and np.all(np.isfinite(g.vMx(z))) and np.all(np.isfinite(g.kperp2_kx2(z)))
+    assert not miller(rhoc=0.5, rmaj=2.77778, rgeo=2.77778, qinp=2.8, shat=0.8).binormal_periodic()
+
+
+@needs(MILLER_RUN)
+@pytest.mark.fast
 def test_from_stella_run_nc_and_text():
     import f90nml
     gs = from_stella_run(MILLER_RUN)

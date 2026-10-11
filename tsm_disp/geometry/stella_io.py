@@ -90,6 +90,7 @@ def from_stella_run(run_dir, prefix=None, source="auto", periodic=None):
             z = g("zed")
             bmag, gds22, gb0 = g("bmag"), g("gds22"), g("gbdrift0")
             grho = g("grho") if "grho" in d.variables else None
+            ky_extra = {v: g(v) for v in ("gds2", "gds21", "gbdrift", "cvdrift") if v in d.variables}
             gradpar = g("b_dot_grad_z") if "b_dot_grad_z" in d.variables else g("gradpar")
             shat, q = float(d.variables["shat"][:]), float(d.variables["q"][:])
             drhodpsi = float(d.variables["drhodpsi"][:]) if "drhodpsi" in d.variables else None
@@ -100,6 +101,7 @@ def from_stella_run(run_dir, prefix=None, source="auto", periodic=None):
         hdr, c = read_geometry_txt(geo_path)
         z, bmag, gds22, gb0 = c["zed"], c["bmag"], c["gds22"], c["gbdrift0"]
         grho = c.get("grho")
+        ky_extra = {v: c[v] for v in ("gds2", "gds21", "gbdrift", "cvdrift") if v in c}
         gradpar = c["bdot_grad_z"]
         shat, q = hdr["shat"], hdr["qinp"]
         drhodpsi = None
@@ -118,7 +120,7 @@ def from_stella_run(run_dir, prefix=None, source="auto", periodic=None):
     geo = TabulatedGeometry(z, bmag, gradpar, gds22, gb0, shat, q=q, eps=eps, rmaj=rmaj, exb_nonlin_fac=exb,
                             periodic=periodic, name="stella %s (%s)" % (os.path.basename(os.path.normpath(run_dir)),
                                                                        os.path.basename(src)),
-                            extra={"grho": grho} if grho is not None else None)
+                            extra=dict(ky_extra, **({"grho": grho} if grho is not None else {})))
     geo.sign_torflux = -1 if geo_option != "vmec" else None
     geo.source, geo.input, geo.header = src, nml, hdr
     return geo

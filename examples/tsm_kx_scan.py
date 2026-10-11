@@ -10,6 +10,7 @@ Run (≈ 10–60 s depending on the number of cores):
 
     python examples/tsm_kx_scan.py                # writes examples/output/tsm_kx_scan.{txt,png,pdf}
     python examples/tsm_kx_scan.py --help         # options (amplitude, k_x range, threads, ...)
+    python examples/tsm_kx_scan.py --solver streaming   # with ion parallel streaming (≈ 6 min on 16 cores)
     python examples/tsm_kx_scan.py --Q 1159 --ky-P 0.001 --delta 0.5  # amplitude from the primary heat flux (Φ_P = 0.723)
 
 Output units: k_x in 1/ρ_i, frequencies in v_th/a with v_th = √(2T/m) (stella units); the plot shows
@@ -30,7 +31,6 @@ except ImportError:  # running from a source checkout after `python setup.py bui
 from tsm_disp.geometry import miller
 from tsm_disp.primary import Primary
 from tsm_disp.dispersion import DispersionRelation
-from tsm_disp.roots import find_root
 
 # stella secondary-mode simulations of this case (𝒜 = 2, Θ = 0.2886), ω in v_th/a
 STELLA_KX = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
@@ -48,6 +48,9 @@ def main():
     ap.add_argument("--delta", type=float, default=0.0,
                     help="phase Δ∥ = Δ⊥ of the primary temperature relative to φ (stella: −den0_phase)")
     ap.add_argument("--q", type=float, default=20.0, help="safety factor")
+    ap.add_argument("--solver", choices=["lambda", "streaming"], default="lambda",
+                    help="lambda: eq. (32), no parallel streaming (fast); streaming: field-line Fourier solver with "
+                         "ion parallel streaming (tsm_disp.streaming, ~20 s per root on 16 threads, seeded by the λ-form root)")
     ap.add_argument("--kx-min", type=float, default=0.1)
     ap.add_argument("--kx-max", type=float, default=0.8)
     ap.add_argument("--dkx", type=float, default=0.05)
@@ -67,9 +70,14 @@ def main():
         a.Phi_P = pri.Phi_P
         print("Q = %g, k_y^P = %g, Δ = %g  ->  Phi_P = %.5f" % (a.Q, a.ky_P, a.delta, a.Phi_P))
     # 3. dispersion relation (λ form: exact finite-Larmor-radius effects)
-    disp = DispersionRelation(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, delta_par=a.delta, delta_prp=a.delta,
-                              form="lambda",
-                              epsabs=a.tol, epsrel=a.tol, nthreads=a.nthreads, warn=False)
+    disp = DispersionRelation(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, delta_par=a.delta,
+                              delta_prp=a.delta, form="lambda", epsabs=a.tol, epsrel=a.tol,
+                              nthreads=a.nthreads, warn=False)
+    stream = None
+    if a.solver == "streaming":       # retains v∥ b·∇: matters at moderate q (2–3× closer to stella at q = 20)
+        from tsm_disp.streaming import StreamingDispersion
+        stream = StreamingDispersion(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, delta_par=a.delta,
+                                     delta_prp=a.delta, nthreads=a.nthreads)
 
     # 4. follow the root from kx-start up and down by continuation
     kx = np.round(np.arange(a.kx_min, a.kx_max + 1e-9, a.dkx), 10)
@@ -77,32 +85,38 @@ def main():
     i0 = int(np.argmin(np.abs(kx - a.kx_start)))
     t0 = time.time()
     for order in (range(i0, len(kx)), range(i0 - 1, -1, -1)):
-        prev = []
+        prev = [] if order[0] == i0 else [(kx[i0], omega[i0])]     # the downward pass continues from kx-start
         for i in order:
             if len(prev) >= 2:
-                guess = 2 * prev[-1] - prev[-2]          # linear extrapolation
+                (k1, w1), (k2, w2) = prev[-2:]
+                guess = w2 + (w2 - w1) * (kx[i] - k2) / (k2 - k1)     # linear extrapolation
             elif prev:
-                guess = prev[-1]
+                guess = prev[-1][1] * kx[i] / prev[-1][0]           # ω ∝ k_x, roughly true of the TSM
             else:
-                guess = a.guess if i == i0 else omega[i0]
-            r = find_root(lambda w: disp.D(w, kx[i]), guess, tol=1e-8, maxiter=30)
+                guess = a.guess
+            if not np.isfinite(guess):
+                break
+            r = disp.find_root(guess, kx[i], tol=1e-8, maxiter=30)        # Newton with the exact ∂D/∂ω
+            if stream is not None and r.converged:     # the λ-form root seeds the (slower) streaming solver:
+                r = stream.find_root(r.omega, kx[i], tol=1e-8, maxiter=30)   # Muller from a distant guess can hop branches
             if not r.converged or r.omega.imag <= 0:
                 print("kx = %.3f: no growing root found near %s, stopping this direction" % (kx[i], guess))
                 break
             omega[i] = r.omega
-            prev.append(r.omega)
+            prev.append((kx[i], r.omega))
             print("kx = %.3f   omega = %+.5f %+.5fi   (%d evaluations of D, %.1f s)"
                   % (kx[i], r.omega.real, r.omega.imag, r.nfev, time.time() - t0), flush=True)
 
     # 5. save
     os.makedirs(a.out, exist_ok=True)
     R = geo.rmaj
-    np.savetxt(os.path.join(a.out, "tsm_kx_scan.txt"),
+    stem = "tsm_kx_scan" + ("_streaming" if a.solver == "streaming" else "")
+    np.savetxt(os.path.join(a.out, stem + ".txt"),
                np.c_[kx, omega.real, omega.imag, omega.real * R, omega.imag * R],
                header="kx*rho_i  omega_r*a/v_th  gamma*a/v_th  omega_r*R/v_th  gamma*R/v_th\n"
                       "CBC q=%g, eta_par=eta_prp=3, Gaussian primary Phi_P=%g" % (a.q, a.Phi_P))
     plot(kx, omega, R, a)
-    print("wrote %s/tsm_kx_scan.{txt,png,pdf} (%.0f s)" % (a.out, time.time() - t0))
+    print("wrote %s/%s.{txt,png,pdf} (%.0f s)" % (a.out, stem, time.time() - t0))
 
 
 def plot(kx, omega, R, a):
@@ -113,7 +127,8 @@ def plot(kx, omega, R, a):
                          "text.usetex": shutil.which("latex") is not None})
     fig, axs = plt.subplots(1, 2, figsize=(20, 8))
     for ax, part, lab in [(axs[0], np.real, r"$\omega_r R/v_{th}$"), (axs[1], np.imag, r"$\gamma R/v_{th}$")]:
-        ax.plot(kx, part(omega) * R, "-", lw=3, c="C0", label="TSM\\_solver (theory)" if plt.rcParams["text.usetex"] else "TSM_solver (theory)")
+        ax.plot(kx, part(omega) * R, "-", lw=3, c="C0", label=("TSM\\_solver" if plt.rcParams["text.usetex"] else "TSM_solver")
+                + (" (streaming)" if a.solver == "streaming" else " (theory)"))
         if abs(a.q - 20) < 1e-12 and abs(a.Phi_P - 0.72314) < 1e-4 and a.delta == 0:
             ax.plot(STELLA_KX, part(STELLA_OMEGA) * R, "x", ms=14, mew=3, c="k", label="stella (gyrokinetic)")
         ax.set_xlabel(r"$k_x \rho_i$")
@@ -127,7 +142,8 @@ def plot(kx, omega, R, a):
         stamp = "…" + stamp[-149:]
     fig.text(0.005, 1.0, stamp, usetex=False, family="monospace", fontsize=10, color="0.5", va="bottom", ha="left")
     for ext in ("png", "pdf"):
-        fig.savefig(os.path.join(a.out, "tsm_kx_scan." + ext), dpi=110, bbox_inches="tight")
+        fig.savefig(os.path.join(a.out, "tsm_kx_scan" + ("_streaming" if a.solver == "streaming" else "") + "." + ext),
+                    dpi=110, bbox_inches="tight")
 
 
 if __name__ == "__main__":

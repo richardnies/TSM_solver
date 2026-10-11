@@ -54,7 +54,7 @@ from tsm_disp.roots import find_root
 geo = miller(rhoc=0.5, rmaj=2.77778, qinp=20, shat=0.8, zed_equal_arc=True)   # flux tube
 pri = Primary.gaussian(Phi_P=0.723, width=np.pi)                                # frozen primary
 disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, nthreads=8)  # D(ω, k_x)
-root = find_root(lambda w: disp.D(w, 0.5), 0.58 + 0.29j)                        # D = 0 near a guess
+root = disp.find_root(0.58 + 0.29j, 0.5)                                        # D = 0 near a guess (Newton)
 print(root.omega)            # ≈ 0.5808 + 0.2927j  (units v_th/a, v_th = √(2T/m))
 ```
 
@@ -158,7 +158,7 @@ from tsm_disp.geometry import AnalyticGeometry
 geo = AnalyticGeometry(vMx=np.sin, gradx=1.0)                    # B = 1, weight ∝ 1/B (b·∇θ uniform)
 pri = Primary.top_hat(theta_P=0.0, Delta_P=np.pi, Phi_P=3.0)
 disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, nthreads=8)
-find_root(lambda w: disp.D(w, 0.3), 1.05 + 0.66j).omega         # 1.0535 + 0.6621i
+disp.find_root(1.05 + 0.66j, 0.3).omega                         # 1.0535 + 0.6621i
 ```
 
 ## Amplitude conventions
@@ -223,6 +223,199 @@ $`\Delta = \pm`$, $`\eta_\parallel = 0`$ or $`\eta_\perp`$ = 0, $`k_y^P`$ = 0.00
 1.0–1.1e-4 (stella's 5 printed digits) with `vperp_max = 4.5`. With stella's default `vperp_max = 3` its
 $`v_\perp`$ integral is truncated and its `qflx` is 0.1–0.3 % low (the temperature perturbation leaks into the
 density and $`\varphi`$ at the 1e-3 level).
+
+## Parallel streaming and finite primary $`k_y`$ (`tsm_disp.streaming`)
+
+The solver above neglects parallel streaming ($`q\to\infty`$): $`D_{\rm ISM}`$ is local in θ. Two further solvers,
+ported from a separate study of the TSM with ion parallel streaming (`extern/streaming_ref/`, circular $`\hat s = 0`$
+model) and generalised here to the package's geometries, retain it by expanding along the field line,
+$`h = \sum_m h_m e^{imz}`$. At each primary phase $`y`$ and velocity, the gyrocentre equation becomes a matrix equation,
+
+```math
+\mathsf A\,h = \Delta_g J_0\varphi,\qquad
+\mathsf A = \bar\omega - \omega_M E - v_\parallel\,\hat{\boldsymbol b}\cdot\nabla z\,(-i\partial_z),\qquad
+\Delta_g = \bar\omega - \omega_g ,
+```
+
+with every $`z`$-dependent coefficient ($`v_{Mx}`$, $`\hat{\boldsymbol b}\cdot\nabla z`$, $`J_0`$ and $`\Gamma_0`$ through $`b(z)`$,
+$`T_P`$, the weight) a Toeplitz matrix in $`m`$. Quasineutrality truncated to $`|m|\le M`$ ($`h`$) and $`|m|\le M_\varphi`$ ($`\varphi`$) gives
+
+```math
+\mathcal D(\omega) = 1 - \tau\big\langle c^{\rm T} \mathsf D(y)^{-1} e_0 \big\rangle_y,\qquad
+\mathsf D = (1+\tau) - \Gamma_0 - \sum_v W_v J_0 (\mathsf A^{-1}\Delta_g - 1) J_0,\qquad c_m = \int w\, e^{imz}\,dz ,
+```
+
+which reduces to eq. (32) without streaming (checked to $`3\times10^{-7}`$ in real geometry) and to the reference
+solver in its circular model ($`10^{-16}`$).
+
+| solver | physics | geometry needed | cost (CBC, 24 threads) |
+|---|---|---|---|
+| `DispersionRelation(form="lambda")` | eq. (32): no streaming, exact FLR | vMx, b, weight (any tube) | 0.01–0.05 s per D |
+| `DispersionRelation(form="Z")` | eq. (32) to $`O(b)`$ | same | ~0.003 s |
+| `StreamingDispersion` | + ion parallel streaming (no mirror force) | + `gradpar` (b·∇z); periodic tube | 1–3 s per D |
+| `BinormalDispersion(ky_P)` | + primary $`k_y`$: sidebands, binormal drift, sideband FLR, primary gyroaverage | + vMy, \|∇y\|², ∇x·∇y, all periodic (ŝ = 0) | 5 s per D ($`N`$ = 6, $`M_\varphi`$ = 8, $`k_y^P\to0`$) to 70 s ($`M_\varphi`$ = 16, $`k_y^P`$ = 0.2) |
+
+```python
+from tsm_disp.streaming import StreamingDispersion, BinormalDispersion, VelocityGrid
+sd = StreamingDispersion(geo, pri, tau=1, eta_par=3, eta_prp=3, nthreads=24)        # Mphi = 16, M ≥ 24 by default
+root = sd.find_root(0.455 + 0.26j, 0.4)                                            # Muller
+grid = VelocityGrid(96, 12, cdepth=1.0, alpha=0.65)        # contours continued below Im ω = 0 (keep FIXED on a track)
+bd = BinormalDispersion(miller(..., shat=0), pri, ky_P=0.1, nthreads=24)   # N = 6 sidebands, Mphi = 8
+D, sign, logdet = bd.D(omega, kx, with_det=True)           # det D for pole-free winding counts
+```
+
+**Truncation.** $`M`$ must exceed the transit criterion $`\omega_M/(v_\parallel\hat{\boldsymbol b}\cdot\nabla z)\sim k_x\rho\,q`$
+(default $`\lceil 6 + 2.2\,k_x\max|v_{Mx}|/\langle\hat{\boldsymbol b}\cdot\nabla z\rangle\rceil`$). $`M_\varphi`$ = 5–6 is
+enough for a flat primary on the circular model, but a localised secondary needs more: on the CBC with a Gaussian
+primary $`M_\varphi`$ = 8, 12, 16 give relative errors $`2\times10^{-2}`$, $`8\times10^{-4}`$, $`7\times10^{-5}`$ (default 16).
+Sidebands: at $`k_y^P = 0`$ the binormal solver must reproduce the $`y`$-parametric one. On the CBC $`\hat s = 0`$ tube
+($`q`$ = 20, Gaussian primary, $`\Phi_P`$ = 0.723, $`k_x\rho_i`$ = 0.4), $`N`$ = 3, 6, 9 give relative errors in $`\omega_r`$ of
+$`-6\times10^{-3}`$, $`-2\times10^{-5}`$, $`+2\times10^{-5}`$ and in $`\gamma`$ of $`+2\times10^{-3}`$, $`+4\times10^{-4}`$, $`<10^{-5}`$; the default is
+$`N`$ = 6 (the reference study used 3). The error falls exponentially (circular model, $`\Phi_P`$ = 2: $`N`$ = 8, 12, 16 give
+$`1.4\times10^{-6}`$, $`4.5\times10^{-9}`$, $`1.5\times10^{-11}`$).
+
+**Finite primary $`k_y`$.** On the CBC $`\hat s = 0`$ tube ($`q`$ = 20, Gaussian primary, $`\Phi_P`$ = 0.723, $`k_x\rho_i`$ = 0.4, $`N`$ = 6,
+$`M_\varphi`$ = 16) the TSM root moves from 0.4552 + 0.2577i ($`k_y^P\to0`$) to 0.4607 + 0.2528i at $`k_y^P\rho_i`$ = 0.1 ($`\omega_r`$ +1.2 %,
+$`\gamma`$ −1.9 %) and 0.4743 + 0.2434i at 0.2 (+4.2 %, −5.5 %); $`N`$ = 9 with $`M_\varphi`$ = 8 gives both roots to within $`6\times10^{-5}`$ ($`\omega_r`$) and $`8\times10^{-4}`$ ($`\gamma`$).
+stella's secondary runs use $`k_y^P`$ = $`10^{-3}`$, where the effect is negligible.
+
+**Result (q = 20, `benchmarks/stella_cbc/run_streaming.py`, `fig_stella_q20_streaming.pdf`).** Streaming removes most
+of the remaining deviation from stella of the λ form, most at small $`k_x`$ (small $`k_x\rho_i q`$):
+
+| label | λ form: mean \|Δω_r\|, \|Δγ\| | streaming: mean \|Δω_r\|, \|Δγ\| | largest λ-form error → streaming |
+|---|---|---|---|
+| 𝒜 = 1 | 0.76 %, 1.38 % | 0.20 %, 0.45 % | γ +3.8 % → +0.03 % ($`k_x\rho_i`$ = 0.2) |
+| 𝒜 = 2 | 0.68 %, 0.85 % | 0.13 %, 0.10 % | γ +4.4 % → −0.4 % (0.1) |
+| 𝒜 = 4 | 0.81 %, 0.41 % | 0.34 %, 0.21 % | ω_r +2.3 % → +0.5 % (0.1) |
+
+Not every point improves: for 𝒜 = 1 at $`k_x\rho_i`$ ≥ 0.6, $`\gamma`$ is +0.5 to +0.8 % above stella with or without streaming, and
+$`\omega_r`$ rises to +0.5 % at 0.8.
+
+**$`q`$ = 2.8 (paper Fig. 1 scan, $`\theta`$-constant primary, $`\Phi_P`$ = 0.355, $`\eta_\parallel = 0`$, $`\eta_\perp = 3`$;
+`run_streaming_caseB.py`, `fig_stella_q2.8_streaming.pdf`).** Here stella's mode at $`k_x\rho_i`$ ≤ 0.12 is purely growing and
+the λ form has no root at all ($`\mathcal D(i\gamma) > 0`$). With streaming, $`\mathcal D(i\gamma)`$ (real on the imaginary axis) changes
+sign and a purely growing root appears, but with a third to a sixth of stella's growth rate and over a narrower range:
+
+| $`k_x\rho_i`$ | 0.02 | 0.04 | 0.06 | 0.08 | 0.10 | 0.12 |
+|---|---|---|---|---|---|---|
+| stella $`\gamma a/v_{\rm th}`$ | 0.021 | 0.043 | 0.056 | 0.061 | 0.057 | 0.034 |
+| streaming $`\gamma a/v_{\rm th}`$ | 0.0070 | 0.0131 | 0.0163 | 0.0162 | 0.0089 | none |
+
+(velocity grid 192 × 24; 384 × 24 changes $`\gamma`$ by $`\le 0.5\,\%`$ at 0.04 and 0.08; 96 × 12 by up to 20 % at 0.02). At
+$`k_x\rho_i`$ = 0.31–0.41 stella's mode is oscillatory (0.446 + 0.062i at 0.41) and neither solver has a root near it: a
+$`|\mathcal D|`$ map over $`0.15\le\omega_r\le0.85`$, $`-0.04\le\gamma\le0.16`$ has no zero (minimum 0.035, at the box edge). What
+is missing is open; this model has no mirror force (trapped ions at $`\epsilon`$ = 0.18) and a frozen primary.
+
+Journal: 2026-10-11_ion-parallel-streaming-cuts-the-tsm-solver-s
+
+**Approximations and limits.** No mirror force ($`v_\parallel`$ constant along the orbit: no trapped particles);
+frozen primary; the finite-$`k_y`$ model needs periodic binormal coefficients, i.e. $`\hat s = 0`$ tubes
+(`miller(..., shat=0)`; the $`\hat s\theta`$ secular terms of gds2/gds21/gbdrift would need twist-and-shift
+coupling). The reference study applies the source operator after the inverse, $`J_0(\Delta_g\mathsf A^{-1}-1)J_0`$;
+this changes $`\mathsf D`$ but not $`\mathcal D`$ in its circular model (checked to $`10^{-16}`$) and $`\mathcal D`$ by
+~$`10^{-4}`$ relative in $`z`$-dependent geometry; the order here follows from the equation for $`h`$.
+
+**Amplitude.** Amplitudes are always the physical E×B velocity $`\Phi_P T_P(z)`$ of `Primary`. The reference study
+reads NP25 eq. (21) as a peak rather than an RMS and reports that the RMS reading overshoots NP25 Fig. 3(a) by
+30–40 % in growth rate (its appendix H); this is its claim about the paper's figure labels, not tested here.
+
+### Geometry for the new solvers
+
+`gradpar(z)` (b·∇z) for streaming: tabulated geometries interpolate stella's array, `CircularAnalytic(q=…)` uses
+$`1/(qR)`$, `AnalyticGeometry(gradpar=…)`. For finite $`k_y`$, `vMy(z)` = gbdrift/2 (per unit $`v_\parallel^2+v_\perp^2/2`$),
+`gyy(z)` = gds2 = $`|\nabla y|^2`$, `gxy(z)` = gds21/ŝ = $`\nabla x\cdot\nabla y`$ and `b_k(z, kx, ky)` =
+$`\tfrac12(k_x^2|\nabla x|^2 + 2k_xk_y\nabla x\cdot\nabla y + k_y^2|\nabla y|^2)/B^2`$ (stella's kperp2). The Miller port computes
+gds2, gds21, gbdrift, cvdrift (agreeing with stella's `geometry_miller.*.output` to its $`5\times10^{-9}`$ print
+precision) and $`\hat s`$-free $`|\nabla x|^2`$, $`v_{Mx}`$, $`\nabla x\cdot\nabla y`$ (so $`\hat s = 0`$ works); `from_stella_run` reads
+them from `.out.nc` / `.geometry`; `AnalyticGeometry(vMy=…, gyy=…, gxy=…)`.
+
+## Near marginality and the ISM region (`tsm_disp.diagnostics`)
+
+Following the streaming study (report §7):
+
+* `root_map(disp, kx, wr_range, wi_range)`: coarse $`|\mathcal D|`$ map → local minima → Muller: all roots in a box.
+* `residue(disp, omega, kx)` = $`1/\mathcal D'(\omega_0)`$ (exact derivative for the λ form): the weight of the pole. A pole
+  that dissolves into the drift-resonance continuum loses its residue while $`|\mathcal D|`$ stays small.
+* `spectral_response(disp, kx, omega_r, eps)` = $`1/|\mathcal D(\omega_r + i\epsilon)|`$: needs no analytic continuation,
+  so it is defined inside the ISM region.
+* `winding_number(disp, kx, box)`: zeros − poles of $`\mathcal D`$ in a box; for `BinormalDispersion` the pole-free
+  $`F = \mathcal D\det\mathsf D`$ counts roots only.
+* `scan_amplitude(make_disp, amplitudes, omega0, kx)`: continuation in $`\Phi_P`$ with jump rejection; tracking **upward**
+  from $`\Phi_P = 0`$ is much better conditioned (branches leave $`\Phi_P = 0`$ quadratically, $`\mathcal D`$ being even in $`\Phi_P`$).
+
+With the streaming solvers keep the velocity contour (`VelocityGrid(cdepth, alpha)`) fixed along a track; switching it
+on mid-track makes trackers hop branches. The deformed contour ($`v_\parallel = t - ic\tanh(t/w)`$: below the axis for
+$`v_\parallel > 0`$, above it for $`v_\parallel < 0`$) is a valid continuation only for $`\omega_r > k_x\Phi_P\max T_P`$ (every
+streaming resonance $`\omega - \omega_E = m v_\parallel\hat{\boldsymbol b}\cdot\nabla z`$ on the side where the contour dips). Below that it is
+wrong even at $`\gamma > 0`$: at $`q`$ = 2.8, $`k_x\rho_i`$ = 0.08 ($`k_x\Phi_P\max T_P`$ = 0.028) it agrees with the real contour to
+$`10^{-4}`$ at $`\omega`$ = 0.1 + 0.05i and 0.3 + 0.05i, but gives 0.055 + 0.015i against 0.048 at $`\omega`$ = 0.05i. Use the real
+contour (`VelocityGrid()` default, $`\gamma > 0`$ only) for purely growing and slow modes.
+
+## All roots in a box, without an initial guess (`tsm_disp.contour_roots`)
+
+```python
+from tsm_disp.contour_roots import find_all_roots
+res = find_all_roots(disp, 0.5, (0.0, 1.2), (0.02, 0.5))   # k_x, ω_r range, γ range (v_th/a)
+print(res.summary())   # roots: ω, |𝒟|, multiplicity, Res(1/𝒟), CR defect; poles; rejected; suspect regions; evaluations
+```
+
+For $`f(\omega) = \mathcal D(\omega, k_x)`$ analytic in a rectangle $`R`$ apart from poles, the argument principle and the
+contour moments
+
+```math
+N = Z - P = \frac{1}{2\pi}\,\Delta_{\partial R}\arg f,\qquad
+s_k = \frac{1}{2\pi i}\oint_{\partial R}\omega^k\,\frac{f'}{f}\,d\omega = \sum_{\rm zeros}\zeta^k - \sum_{\rm poles}p^k
+    = \omega_0^k N - \frac{k}{2\pi i}\oint_{\partial R}\omega^{k-1}\log f\,d\omega
+```
+
+need only samples of $`f`$ on $`\partial R`$ ($`\log f`$ continued along $`\partial R`$ from $`\omega_0`$). The search:
+
+1. **Boundary sampling.** Each edge is bisected until consecutive samples differ in phase by less than $`\pi/4`$; $`N`$
+   is the sum of the phase steps. Samples sit on a dyadic lattice and are shared by neighbouring and child cells.
+2. **Isolation.** A cell with more than 3 zeros is bisected across its longer side (a split line through a zero is
+   shifted).
+3. **Location.** In a cell with $`1 \le Z \le 3`$ zeros they are the roots of the polynomial with power sums
+   $`s_1\dots s_Z`$ (Newton's identities), polished by Newton's method (exact $`\partial\mathcal D/\partial\omega`$) or
+   Muller's, and accepted if they lie in the cell and reproduce $`s_1\dots s_{\max(Z,3)}`$ (this also gives the
+   multiplicities). Cells without zeros must have $`s_{1,2,3} \approx 0`$ too, else they are bisected.
+4. **Verification.** The Cauchy–Riemann defect $`|\partial_{\bar\omega} f|/|\partial_\omega f|`$ (four-point stencil) must be
+   below $`10^{-3}`$; `residue` $`= 1/\mathcal D'(\omega_0)`$.
+
+**The ISM region.** Where $`D_{\rm ISM}(z, y, \omega) = 0`$ for some real $`(z, y)`$, $`\mathcal D`$ of `DispersionRelation`
+is continuous but not analytic, and its winding number is no zero count: the box below holds the TSM but has
+$`N = 0`$. There the field-line quadrature cannot converge; the search samples with at most 32 panels (normally 8–14),
+so such evaluations stop with flag 16 after 1–6 s (60 s at the default settings) and are flagged. Cells touching
+flagged samples, or without zeros but with $`s_k \ne 0`$, are bisected down to `max_depth_suspect` = 6 and reported in
+`res.suspect_regions`; polishes restart from their smallest unflagged $`|\mathcal D|`$ and are abandoned when they meet a
+flagged evaluation. `local_ism_roots(disp, kx)` maps the region by the local roots $`\omega(z, y)`$ of $`D_{\rm ISM} = 0`$
+(`python examples/find_all_roots.py [--eta 1.5]` plots both).
+
+**Poles.** `StreamingDispersion` has poles where $`\det\mathsf D(y_j) = 0`$ at a node of its $`y`$ rule, and zeros between
+them (the discretised continuum). By default ($`N = Z - P`$) zero–pole pairs show up in $`s_{1,2,3}`$ and are bisected;
+`use_det=True` samples the pole-free $`F = \mathcal D\prod_g\det\mathsf D(y_g)`$ (distinct matrices only;
+`BinormalDispersion`: $`F = \mathcal D\det\mathsf D`$) to count zeros and poles separately, at 2× the samples or far more
+next to the poles. `confirm=<the solver with more y nodes>` re-polishes every root and rejects the ones that move.
+For the real velocity contour keep $`\gamma \gtrsim 0.05`$ (`default_validity` enforces $`\gamma > 0`$; for the tanh
+contour $`\omega_r > k_x\Phi_P\max T_P`$).
+
+Results (CBC $`q = 20`$, $`\Phi_P = 0.723`$, $`k_x\rho_i = 0.5`$, 8 threads; `examples/find_all_roots.py`):
+
+| solver, $`\eta`$ | box ($`\omega_r \times \gamma`$) | roots | suspect cells | evaluations | time |
+|---|---|---|---|---|---|
+| λ, 3 | $`[0, 1.2]\times[0.02, 0.5]`$ | TSM $`0.5808764 + 0.2927117i`$ | 11 (the ISM region) | 395 | 92 s |
+| λ, 3 | $`[0.3, 1.2]\times[0.27, 0.5]`$ (above the ISM region) | TSM | 0 | 62 | 1.5 s |
+| λ, 1.5 | $`[0, 1.2]\times[0.02, 0.5]`$ | TSM $`0.4973331 + 0.1263595i`$, 0.012 above the ISM tip | 6 | 414 | 95 s |
+| λ, 1.1 | $`[0.3, 0.8]\times[0.02, 0.2]`$ | TSM $`0.4631526 + 0.0642792i`$, 0.002 from the ISM tip | 6 | 320 | 119 s |
+| λ, 1.0 | $`[0.3, 0.8]\times[0.02, 0.2]`$ | none: the TSM has entered the ISM region ($`\gamma \le 0.065`$ flagged) | 6 | 350 | 114 s |
+| streaming, 3 | $`[0.45, 0.75]\times[0.27, 0.4]`$ | $`0.5799333 + 0.2923443i`$ (= `benchmarks/stella_cbc`) | 0 | 47 | 203 s |
+
+`diagnostics.root_map` on the first box (25 × 13 grid) finds the same TSM (and a damped root outside the box) with
+343 evaluations in 102 s, but without a completeness guarantee or a flag on the ISM region.
+
+**Limits.** Only cell boundaries are sampled: a non-analytic island that no boundary crosses is caught by the moment
+test or by `probe=True` (Cauchy–Riemann test at every empty cell's centre). Without $`F`$ a zero–pole pair closer than
+about `dipole_tol` × the cell size is invisible. A zero on the outer boundary is polished from the unresolved segment
+(note "on a cell edge").
 
 ## More usage
 
@@ -290,6 +483,24 @@ stella's RDK mode is not reproduced, as parallel streaming (neglected in the the
 | λ-form D, TSM point | 5.1 s (eps 1e-6; err 1.5e-2 from the bug) | 1.3 s (err 1e-16) | 0.07 s |
 | TSM root, $`k_x = 0.5`$ | 62 s (lm; ω off by 9e-3) | 8.9 s (Muller) | 0.55 s |
 
+Since 2026-10-11 (same cases, `benchmarks/timing.py` tolerances; measured back to back on a loaded node, so
+compare the columns rather than the absolute numbers):
+
+| problem | 2026-10-08 code, 1 / 16 threads | now, 1 / 16 threads |
+|---|---|---|
+| λ-form D, TSM point (tolerance 1e-8) | 1.34 s / 0.105 s | 0.21 s / 0.014 s |
+| D together with ∂D/∂ω | — | 0.22 s / 0.015 s |
+| TSM root from a guess 1 % off | 10.8 s, 7 evaluations (Muller) / 0.92 s | 1.35 s, 5 evaluations (Newton) / 0.10 s |
+
+What changed, in order of gain: (i) the λ-integrand no longer calls libm's `cabs` (hypot) and the C99 complex
+multiply/divide routines (inline arithmetic, `-fcx-fortran-rules` where the compiler accepts it), and the
+geometry interpolation no longer wakes OpenBLAS threads (2.5×); (ii) the y-average uses the periodic trapezoid
+rule with doubling (its error decays exponentially for the analytic periodic y-integrand; adaptive GK15
+fallback; `y_rule="adaptive"` restores the old rule) and the λ tolerance follows the requested tolerance
+(`tolN` = epsabs_y clamped to [1e-12, 1e-8]) (2.5×); (iii) `disp.find_root` uses Newton's method with
+∂D/∂ω integrated on the same nodes as D (2 % extra), pole terms included (≈ 1.5× fewer evaluations).
+Results agree with the previous code to ≤ 1e-11 (stella-benchmark roots: 4e-11 relative).
+
 ## Changes with respect to `code_eval_disp_NEW`
 
 1. **Bug fixed (λ form):** $`\Gamma_0(\tilde b)=e^{-\tilde b}I_0(\tilde b)`$ for complex $`\tilde b`$ was computed with scipy's
@@ -302,12 +513,13 @@ stella's RDK mode is not reproduced, as parallel streaming (neglected in the the
    image of the true crossings) is not analytic: D jumps by ~6e-2 across the real axis in the test case.
    Available as `y_contour="real_points"`.
 4. **Speed:** one complex quadrature instead of real and imaginary parts separately at both levels, adaptive
-   Gauss–Kronrod, Gauss–Laguerre rays, OpenMP over field-line nodes, Muller root finding (see
-   `benchmarks/timing.py`).
+   Gauss–Kronrod, Gauss–Laguerre rays, OpenMP over field-line nodes, periodic trapezoid rule in y, Newton root
+   finding with the exact ∂D/∂ω (see Timing).
 5. **Geometry:** general (Miller, VMEC, stella output); the circular model is `CircularAnalytic`.
 
 ## Layout
 
 `tsm_disp/_kernels.pyx` (compiled kernels), `kernels_ref.py` (reference quadratures for tests),
-`dispersion.py`, `roots.py`, `limits.py`, `primary.py`, `geometry/`; `tests/`; `benchmarks/stella_cbc/`
+`dispersion.py`, `streaming.py` (parallel streaming, finite k_y), `diagnostics.py`, `contour_roots.py` (all roots in a box), `roots.py`, `limits.py`,
+`primary.py`, `geometry/`; `extern/streaming_ref/` (vendored reference of the streaming study); `tests/`; `benchmarks/stella_cbc/`
 (stella comparison), `benchmarks/decks/` (shaped-Miller decks), `benchmarks/timing.py`; `examples/`; `scripts/`.

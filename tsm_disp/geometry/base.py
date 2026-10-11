@@ -32,6 +32,11 @@ class Geometry:
         """FLR parameter b = k_x² |∇x|² ρ²/2 at k_y = 0."""
         return 0.5 * kx**2 * self.kperp2_kx2(z)
 
+    def gradpar(self, z):
+        """b·∇z in 1/a (the inverse connection length): needed only by the parallel-streaming solvers."""
+        raise NotImplementedError("%s does not provide b·∇z (gradpar); the streaming solvers need it"
+                                  % type(self).__name__)
+
     def grho(self, z):
         """|∇ρ| in 1/a (ρ = r/a for Miller, √(ψ_t/ψ_t,edge) for VMEC): stella's grho, used to normalise fluxes."""
         raise NotImplementedError("%s does not provide |∇ρ| (grho); pass grho= explicitly" % type(self).__name__)
@@ -96,12 +101,17 @@ class TabulatedGeometry(Geometry):
                   vMx = drift_sign · gbdrift0/(2 ŝ)
         shat      magnetic shear ŝ
     drift_sign: sign convention between stella's drift and the solver's ω_M (see README §Geometry).
+    gxx, vmx:   optional ŝ-free |∇x|² (= gds22/ŝ²) and v_Mx (= gbdrift0/(2ŝ)) arrays, used instead of the
+                ratios (needed at ŝ = 0).
+    extra:      further arrays; the finite-k_y solver uses gds2 (|∇y|²), gxy (∇x·∇y = gds21/ŝ, else gds21/ŝ),
+                gbdrift and cvdrift (binormal drift v_My = gbdrift/2 per unit v∥² + v⊥²/2).
     periodic:   True for tokamak tubes (z ∈ [−π, π], endpoint duplicated); Fourier interpolation on a
                 uniform grid, periodic cubic spline otherwise. False: not-a-knot cubic spline.
     """
 
     def __init__(self, z, bmag, gradpar, gds22, gbdrift0, shat, *, q=None, eps=None, rmaj=None,
-                 exb_nonlin_fac=None, periodic=True, drift_sign=1.0, name="tabulated", extra=None):
+                 exb_nonlin_fac=None, periodic=True, drift_sign=1.0, name="tabulated", extra=None,
+                 gxx=None, vmx=None):
         z = np.asarray(z, float)
         self.z_grid = z
         self.zmin, self.zmax = float(z[0]), float(z[-1])
@@ -112,8 +122,10 @@ class TabulatedGeometry(Geometry):
         self.extra = extra or {}
         self.arrays = dict(bmag=np.asarray(bmag, float), gradpar=np.asarray(gradpar, float),
                            gds22=np.asarray(gds22, float), gbdrift0=np.asarray(gbdrift0, float))
-        vMx = drift_sign * self.arrays["gbdrift0"] / (2.0 * shat)
-        kp = self.arrays["gds22"] / (shat**2 * self.arrays["bmag"]**2)
+        self.drift_sign = drift_sign
+        vMx = drift_sign * (np.asarray(vmx, float) if vmx is not None else self.arrays["gbdrift0"] / (2.0 * shat))
+        gx = np.asarray(gxx, float) if gxx is not None else self.arrays["gds22"] / shat**2
+        kp = gx / self.arrays["bmag"]**2
         jac = 1.0 / (self.arrays["bmag"] * self.arrays["gradpar"])
         self._vMx = self._interp(z, vMx)
         self._kp = self._interp(z, kp)
@@ -143,6 +155,61 @@ class TabulatedGeometry(Geometry):
 
     def weight(self, z):
         return self._jac(z) / self._jnorm
+
+    # -- finite-k_y quantities (tsm_disp.streaming.BinormalDispersion) ----------------------------------------------
+    def _extra_interp(self, key, f):
+        name = "_x_" + key
+        if not hasattr(self, name):
+            f = np.asarray(f, float)
+            if self.periodic and np.isclose(f[0], f[-1], rtol=1e-6, atol=1e-10 * max(1.0, np.abs(f).max())):
+                setattr(self, name, self._interp(self.z_grid, f))
+            else:
+                setattr(self, name, CubicSpline(self.z_grid, f, bc_type="not-a-knot"))
+        return getattr(self, name)
+
+    def _need(self, key):
+        if key not in self.extra or self.extra[key] is None:
+            raise NotImplementedError("%s has no '%s' (needed for finite k_y)" % (self.name, key))
+        return self.extra[key]
+
+    def vMy(self, z):
+        """Binormal magnetic drift per unit (v∥² + v⊥²/2), ρ v_th/a: drift_sign · gbdrift/2 (cvdrift = gbdrift
+        assumed, i.e. β' = 0; checked by the finite-k_y solver)."""
+        return self._extra_interp("vmy", self.drift_sign * 0.5 * np.asarray(self._need("gbdrift"), float))(z)
+
+    def gyy(self, z):
+        """|∇y|² (stella gds2)."""
+        return self._extra_interp("gyy", self._need("gds2"))(z)
+
+    def gxy(self, z):
+        """∇x·∇y (stella gds21/ŝ)."""
+        f = self.extra["gxy"] if "gxy" in self.extra else np.asarray(self._need("gds21"), float) / self.shat
+        return self._extra_interp("gxy", f)(z)
+
+    def b_k(self, z, kx, ky):
+        """FLR parameter ½ k⊥²/B² of the mode (k_x, k_y): stella kperp2 = k_y² gds2 + 2 k_x k_y gds21/ŝ + k_x² gds22/ŝ²."""
+        if ky == 0:
+            return self.b(z, kx)
+        B2 = self.arrays["bmag"]
+        Bz = self._extra_interp("bmag", B2)(z)
+        return 0.5 * (kx**2 * self.kperp2_kx2(z) * Bz**2 + 2 * kx * ky * self.gxy(z) + ky**2 * self.gyy(z)) / Bz**2
+
+    def binormal_periodic(self, tol=1e-6):
+        """True if the k_y ≠ 0 coefficients (gds2, gds21, gbdrift) are periodic over the tube (e.g. ŝ = 0)."""
+        for key in ("gds2", "gbdrift"):
+            f = np.asarray(self._need(key), float)
+            if abs(f[0] - f[-1]) > tol * max(1.0, np.abs(f).max()):
+                return False
+        f = np.asarray(self.extra["gxy"] if "gxy" in self.extra else self._need("gds21"), float)
+        return abs(f[0] - f[-1]) <= tol * max(1.0, np.abs(f).max())
+
+    def gradpar(self, z):
+        if not hasattr(self, "_gradpar"):
+            f = np.asarray(self.arrays["gradpar"], float).copy()
+            if self.periodic:
+                f[-1] = f[0]
+            self._gradpar = self._interp(self.z_grid, f)
+        return self._gradpar(z)
 
     def grho(self, z):
         if "grho" not in self.extra:

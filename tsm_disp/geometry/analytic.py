@@ -7,7 +7,8 @@ from .base import Geometry
 class CircularAnalytic(Geometry):
     """The geometry hard-coded in code_eval_disp_NEW (large-aspect-ratio circular tokamak):
 
-        b = ½ k_x² (1 + ε cos θ)²,   weight ∝ 1 + ε cos θ,   vMx = sin θ / rmaj  (or a callable T_D).
+        b = ½ k_x² (1 + ε cos θ)²,   weight ∝ 1 + ε cos θ,   vMx = sin θ / rmaj  (or a callable T_D),
+        b·∇θ = 1/(q rmaj)  (if q is given; parallel-streaming solvers only).
 
     eps defaults to 0.5/2.7778 = 0.18 and rmaj to 2.7778 (CBC at r = a/2, units of a).
     """
@@ -28,6 +29,12 @@ class CircularAnalytic(Geometry):
 
     def weight(self, z):
         return (1.0 + self.eps * np.cos(z)) / (2 * np.pi)
+
+    def gradpar(self, z):
+        if self.q is None:
+            return Geometry.gradpar(self, z)
+        g = 1.0 / (self.q * self.rmaj)
+        return np.full(np.shape(z), g) if np.ndim(z) else g
 
 
 class Uniform(Geometry):
@@ -64,6 +71,9 @@ class AnalyticGeometry(Geometry):
         jacobian(θ)  1/(B·∇θ) up to a constant (the field-line average weight); default 1/B(θ),
                      i.e. b·∇θ uniform. The weight is normalised to ∫ weight dθ = 1.
         grho(θ)      optional |∇ρ| (1/a), only for the flux normalisation of primary.heat_flux_stella
+        gradpar(θ)   optional b·∇θ (1/a), only for the parallel-streaming solvers (circular: 1/(q R))
+        vMy, gyy, gxy  optional binormal drift (per unit energy), |∇y|² and ∇x·∇y, only for the finite-k_y solver
+                     (circular ŝ = 0 model: vMy = cos θ/R, gyy = 1, gxy = 0)
 
     Each argument is a vectorised callable or a constant. `breakpoints` lists interior angles where the
     θ quadrature should start a new panel (discontinuities or sharp features of the functions).
@@ -72,7 +82,8 @@ class AnalyticGeometry(Geometry):
     gradx=lambda t: 1 + 0.18*np.cos(t), jacobian=lambda t: 1 + 0.18*np.cos(t)).
     """
 
-    def __init__(self, vMx, gradx=1.0, B=1.0, jacobian=None, *, grho=None, zmin=-np.pi, zmax=np.pi, periodic=True,
+    def __init__(self, vMx, gradx=1.0, B=1.0, jacobian=None, *, grho=None, gradpar=None, vMy=None, gyy=None,
+                 gxy=None, zmin=-np.pi, zmax=np.pi, periodic=True,
                  breakpoints=(), shat=None, q=None, eps=None, rmaj=None, exb_nonlin_fac=None, sign_torflux=None,
                  name="analytic"):
         self._vMx, self._gradx, self._B = _as_function(vMx), _as_function(gradx), _as_function(B)
@@ -82,6 +93,10 @@ class AnalyticGeometry(Geometry):
         self.shat, self.q, self.eps, self.rmaj = shat, q, eps, rmaj
         self.exb_nonlin_fac, self.sign_torflux = exb_nonlin_fac, sign_torflux
         self._grho_f = _as_function(grho) if grho is not None else None
+        self._gradpar_f = _as_function(gradpar) if gradpar is not None else None
+        self._vMy_f = _as_function(vMy) if vMy is not None else None
+        self._gyy_f = _as_function(gyy) if gyy is not None else None
+        self._gxy_f = _as_function(gxy) if gxy is not None else _as_function(0.0)
         self.name = name
         from scipy.integrate import quad
         pts = [p for p in self._breakpoints if self.zmin < p < self.zmax] or None
@@ -107,6 +122,31 @@ class AnalyticGeometry(Geometry):
         if self._grho_f is None:
             return Geometry.grho(self, z)
         return self._grho_f(z)
+
+    def gradpar(self, z):
+        if self._gradpar_f is None:
+            return Geometry.gradpar(self, z)
+        return self._gradpar_f(z)
+
+    def _binormal(self, f, name):
+        if f is None:
+            raise NotImplementedError("AnalyticGeometry needs %s= for finite k_y" % name)
+        return f
+
+    def vMy(self, z):
+        return self._binormal(self._vMy_f, "vMy")(z)
+
+    def gyy(self, z):
+        return self._binormal(self._gyy_f, "gyy")(z)
+
+    def gxy(self, z):
+        return self._gxy_f(z)
+
+    def b_k(self, z, kx, ky):
+        """½ k⊥²/B², k⊥² = k_x²|∇x|² + 2 k_x k_y ∇x·∇y + k_y²|∇y|²."""
+        if ky == 0:
+            return self.b(z, kx)
+        return 0.5 * (kx**2 * self._gradx(z)**2 + 2 * kx * ky * self.gxy(z) + ky**2 * self.gyy(z)) / self._B(z)**2
 
     def breakpoints(self):
         return list(self._breakpoints)
