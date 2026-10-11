@@ -14,36 +14,45 @@ from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
 
-def has_openmp():
-    if os.environ.get("TSM_NO_OPENMP"):
-        return False
+def compiler_accepts(flags, src="int main(void){return 0;}\n", link=True):
+    """True if the C compiler compiles (and links) a test program with the extra flags."""
     try:                                   # Python >= 3.12 has no distutils; setuptools vendors it
         from setuptools._distutils.ccompiler import new_compiler
         from setuptools._distutils.sysconfig import customize_compiler
-        from setuptools._distutils.errors import CompileError, LinkError
     except ImportError:
         from distutils.ccompiler import new_compiler
         from distutils.sysconfig import customize_compiler
-        from distutils.errors import CompileError, LinkError
     cc = new_compiler()
     customize_compiler(cc)
     d = tempfile.mkdtemp()
-    src = os.path.join(d, "t.c")
-    with open(src, "w") as f:
-        f.write("#include <omp.h>\nint main(void){return omp_get_max_threads() > 0 ? 0 : 1;}\n")
+    path = os.path.join(d, "t.c")
+    with open(path, "w") as f:
+        f.write(src)
     try:
-        obj = cc.compile([src], output_dir=d, extra_postargs=["-fopenmp"])
-        cc.link_executable(obj, os.path.join(d, "t"), extra_postargs=["-fopenmp"])
+        obj = cc.compile([path], output_dir=d, extra_postargs=flags)
+        if link:
+            cc.link_executable(obj, os.path.join(d, "t"), extra_postargs=flags)
         return True
-    except (CompileError, LinkError, Exception):
+    except Exception:
         return False
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def has_openmp():
+    if os.environ.get("TSM_NO_OPENMP"):
+        return False
+    return compiler_accepts(["-fopenmp"], "#include <omp.h>\nint main(void){return omp_get_max_threads() > 0 ? 0 : 1;}\n")
+
+
 omp = has_openmp()
 print("TSM_solver: building %s OpenMP" % ("with" if omp else "WITHOUT"), file=sys.stderr)
 flags = ["-O3"] + (["-fopenmp"] if omp else [])
+# inline complex multiplication/division (no C99 Annex G NaN/inf recovery calls __muldc3/__divdc3,
+# ~20 % of the run time); gcc and recent clang accept it
+if compiler_accepts(["-Werror", "-fcx-fortran-rules"], link=False):
+    flags.append("-fcx-fortran-rules")
+    print("TSM_solver: inline complex arithmetic (-fcx-fortran-rules)", file=sys.stderr)
 
 ext = Extension("tsm_disp._kernels", sources=["tsm_disp/_kernels.pyx"],
                 extra_compile_args=flags, extra_link_args=(["-fopenmp"] if omp else []))

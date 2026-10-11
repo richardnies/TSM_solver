@@ -28,10 +28,20 @@ cdef extern from "complex.h" nogil:
     double complex conj(double complex)
     double creal(double complex)
     double cimag(double complex)
-    double cabs(double complex)
+    double cabs_libm "cabs"(double complex)
     double carg(double complex)
 
 ctypedef double complex (*cfun)(double, void*) noexcept nogil
+
+cdef inline double cabs(double complex z) noexcept nogil:
+    """|z| as √(re² + im²): libm's cabs (hypot) guards against over/underflow beyond 1e±154, which does not
+    occur in these integrands, and costs ~20 % of the run time."""
+    cdef double x = creal(z), y = cimag(z)
+    return sqrt(x * x + y * y)
+
+cdef inline double cabs2(double complex z) noexcept nogil:
+    cdef double x = creal(z), y = cimag(z)
+    return x * x + y * y
 
 # scipy's special functions through noexcept pointers: older scipy (< 1.11) declares them without `noexcept`,
 # so Cython 3 would take the GIL after every call (an exception check) and serialise the OpenMP loops
@@ -205,11 +215,11 @@ cdef inline void gamma0_both(double complex z, double complex* g0, double comple
         s0 = t0
         s1 = t1
         for k in range(1, 40):
-            t0 = t0 * q / (k * k)
-            t1 = t1 * q / (k * (k + 1.0))
+            t0 = t0 * q * (1.0 / (k * k))
+            t1 = t1 * q * (1.0 / (k * (k + 1.0)))
             s0 = s0 + t0
             s1 = s1 + t1
-            if cabs(t0) < 1e-17 * cabs(s0) and cabs(t1) < 1e-17 * (cabs(s1) + 1e-300):
+            if cabs2(t0) < 1e-34 * cabs2(s0) and cabs2(t1) < 1e-34 * cabs2(s1) + 1e-300:
                 break
     else:
         s0 = sp_iv(0.0, z)

@@ -80,7 +80,7 @@ class _Fourier:
     def __call__(self, z):
         z = np.asarray(z)
         ph = 2j * np.pi * np.multiply.outer(z - self.z0, self.k) / self.L
-        out = np.exp(ph) @ self.c
+        out = (np.exp(ph) * self.c).sum(axis=-1)       # not `@`: a BLAS call leaves OpenBLAS threads spinning
         return out.real if np.isrealobj(z) else out
 
 

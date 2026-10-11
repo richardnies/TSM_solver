@@ -81,6 +81,7 @@ class DispersionRelation:
         self.eta_fixed, self.eta_max, self.limit, self.warn = eta_fixed, eta_max, limit, warn
         self.subtract_poles = subtract_poles
         self.last = {}
+        self._geo_cache = {}
 
     # -- local quantities -------------------------------------------------------------------------
     def _contour(self, omega):
@@ -88,12 +89,25 @@ class DispersionRelation:
             return CONTOURS["real"] if np.imag(omega) > 0 else CONTOURS["deformed"]
         return CONTOURS[self.y_contour]
 
+    def _geo_at(self, z):
+        """(vMx, b at k_x = 1, weight) at the nodes z, cached: the θ nodes of the field-line integral are the
+        same for every ω and k_x."""
+        g = self.geometry
+        key = (id(g), z.tobytes())
+        c = self._geo_cache.get(key)
+        if c is None:
+            if len(self._geo_cache) > 4096:
+                self._geo_cache.clear()
+            c = (np.ascontiguousarray(g.vMx(z), dtype=float), np.ascontiguousarray(g.b(z, 1.0), dtype=float),
+                 np.ascontiguousarray(g.weight(z), dtype=float))
+            self._geo_cache[key] = c
+        return c
+
     def _local(self, z, kx):
         z = np.ascontiguousarray(z, dtype=float)
+        vMx, b1, _ = self._geo_at(z)
         A = np.ascontiguousarray(kx * self.primary.amplitude(z), dtype=float)
-        wM = np.ascontiguousarray(kx * self.geometry.vMx(z), dtype=float)
-        b = np.ascontiguousarray(self.geometry.b(z, kx), dtype=float)
-        return A, wM, b
+        return A, kx * vMx, kx**2 * b1
 
     def y_average(self, omega, kx, z):
         """(1/2π)∫dy (D_ISM − 1)/D_ISM at field-line points z (array). Returns (values, flags, nevals)."""
@@ -134,7 +148,7 @@ class DispersionRelation:
         h = 0.5 * (bb - a)
         z = (c[:, None] + h[:, None] * _X[None, :]).ravel()
         v, flags, nev = self.y_average(omega, kx, z)
-        f = (self.geometry.weight(z) * v).reshape(len(panels), 21)
+        f = (self._geo_at(np.ascontiguousarray(z, dtype=float))[2] * v).reshape(len(panels), 21)
         resk = (f * _WK).sum(axis=1) * h
         resg = (f * _WGfull).sum(axis=1) * h
         mean = resk / (2 * h)
