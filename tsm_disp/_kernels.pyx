@@ -16,7 +16,7 @@ All frequencies are in the units of the caller (stella: v_th/a). Variable names 
 cimport cython
 from cython.parallel cimport prange, parallel
 from libc.math cimport sqrt, exp, log, fabs, cos, sin, M_PI
-from scipy.special.cython_special cimport wofz, iv as sp_iv, ive as sp_ive
+from scipy.special.cython_special cimport wofz as _sp_wofz, iv as _sp_iv, ive as _sp_ive
 import numpy as np
 
 cdef extern from "complex.h" nogil:
@@ -31,7 +31,17 @@ cdef extern from "complex.h" nogil:
     double cabs(double complex)
     double carg(double complex)
 
-ctypedef double complex (*cfun)(double, void*) nogil
+ctypedef double complex (*cfun)(double, void*) noexcept nogil
+
+# scipy's special functions through noexcept pointers: older scipy (< 1.11) declares them without `noexcept`,
+# so Cython 3 would take the GIL after every call (an exception check) and serialise the OpenMP loops
+ctypedef double complex _dcomplex
+ctypedef double complex (*_c_to_c)(double complex) noexcept nogil
+ctypedef double complex (*_dc_to_c)(double, double complex) noexcept nogil
+ctypedef double (*_dd_to_d)(double, double) noexcept nogil
+cdef _c_to_c wofz = <_c_to_c> _sp_wofz
+cdef _dc_to_c sp_iv = <_dc_to_c> _sp_iv[_dcomplex]
+cdef _dd_to_d sp_ive = <_dd_to_d> _sp_ive[double]
 
 DEF MAXINT = 256
 cdef double EPMACH = 2.220446049250313e-16
@@ -74,7 +84,7 @@ cdef double Q_GL16 = 2.5
 cdef double Q_GL48 = 1.5
 
 
-cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double* err, double* rabs) nogil:
+cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double* err, double* rabs) noexcept nogil:
     cdef double centr = 0.5 * (a + b)
     cdef double hl = 0.5 * (b - a)
     cdef double complex fv1[7]
@@ -120,7 +130,7 @@ cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double*
 
 
 cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs, double epsrel,
-                          int limit, double* abserr, int* ier, int* neval) nogil:
+                          int limit, double* abserr, int* ier, int* neval) noexcept nogil:
     """Globally adaptive GK15 over [pts[0], pts[npts-1]] with initial breakpoints pts (sorted)."""
     cdef double A[MAXINT]
     cdef double B[MAXINT]
@@ -185,7 +195,7 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
 # ----------------------------------------------------------------------------------------------
 # Γ0(z) = e^{-z} I0(z) and Γ0'(z) for complex z (scipy's complex ive is e^{-|Re z|} I0(z): do not use)
 # ----------------------------------------------------------------------------------------------
-cdef inline void gamma0_both(double complex z, double complex* g0, double complex* g0p) nogil:
+cdef inline void gamma0_both(double complex z, double complex* g0, double complex* g0p) noexcept nogil:
     cdef double complex q, t0, t1, s0, s1, ez
     cdef int k
     if cabs(z) <= 3.0:
@@ -239,7 +249,7 @@ cdef double CPAR[3]
 CPAR[:] = [1.0, 0.5, 0.75]       # ∫ e^{-v²} v^{2n} dv/√π = Γ(n+½)/Γ(½)
 
 
-cdef inline double complex lam_bracket(LamP* p, double complex lam) nogil:
+cdef inline double complex lam_bracket(LamP* p, double complex lam) noexcept nogil:
     """λ-space transform of ∫d³v F_M J0^j e^{−iλω_M(v∥²+v⊥²/2)} × weights, i.e. the integrand of
     N = −i ∫dλ e^{iλω̄} (bracket). Parallel part: c_n (1+iλω_M)^{−½−n}; perpendicular part:
     P_m = (−d/ds)^m P_0(s), s = 1 + ½iλω_M, P_0 = e^{−b/s} I0(b/s)/s (J0²) or e^{−b/2s}/s (J0)."""
@@ -248,7 +258,8 @@ cdef inline double complex lam_bracket(LamP* p, double complex lam) nogil:
     cdef double complex d2 = 1.0 / (1.0 + il)
     cdef double complex sq = 1.0 / (p.rothalf * csqrt((1.0 + il) * p.rot))
     cdef double complex bh = p.b * d1
-    cdef double complex g0, g0p, u, e, P[3], acc, d2n
+    cdef double complex g0, g0p, u, e, acc, d2n
+    cdef double complex P[3]
     cdef int n, m
     if p.mom == 0:
         gamma0_both(bh, &g0, &g0p)
@@ -275,14 +286,14 @@ cdef inline double complex lam_bracket(LamP* p, double complex lam) nogil:
     return sq * acc
 
 
-cdef double complex lam_f(double x, void* vp) nogil:
+cdef double complex lam_f(double x, void* vp) noexcept nogil:
     cdef LamP* p = <LamP*> vp
     cdef double complex lam = p.lam0 + p.dirn * x
     return -1j * p.pref * cexp(1j * (lam - p.lam0) * p.wbar) * lam_bracket(p, lam) * p.dirn
 
 
 cdef double complex leg(LamP* p, double x0, double x1, double* brk, int nbrk,
-                        double tol, int* ier, int* neval) nogil:
+                        double tol, int* ier, int* neval) noexcept nogil:
     cdef double pts[12]
     cdef int n = 0, i, j
     cdef double tmp, err
@@ -308,14 +319,14 @@ cdef double complex leg(LamP* p, double x0, double x1, double* brk, int nbrk,
     return r
 
 
-cdef double complex lam_g(double s, void* vp) nogil:
+cdef double complex lam_g(double s, void* vp) noexcept nogil:
     """Ray integrand divided by e^{-s} (for Gauss–Laguerre); the ray is λ = lam0 + i s/ω̄."""
     cdef LamP* p = <LamP*> vp
     cdef double complex lam = p.lam0 + p.dirn * s
     return -1j * p.pref * lam_bracket(p, lam) * p.dirn
 
 
-cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval, bint principal=False) nogil:
+cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval, bint principal=False) noexcept nogil:
     """∫ along λ = lam0 + i s/ω̄, s ∈ [0, ∞): Gauss–Laguerre when the singularities λ = ik/ωM
     (k = 1, 2) are far from the ray in the sense |Im √s_k| ≥ Q, adaptive GK15 otherwise."""
     cdef double complex sk
@@ -361,7 +372,7 @@ cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int*
     return out
 
 
-cdef double ray_growth(double complex Om, double b) nogil:
+cdef double ray_growth(double complex Om, double b) noexcept nogil:
     """max over the integrated ray s ∈ [0, 40] of −s − 2 Re b̃(s), b̃ = b/(1 − s/2Ω): the log of
     the largest integrand magnitude (|Γ0(b̃)| ≲ e^{−2 Re b̃}). Re b̃ is smallest near
     s* = 2 Re Ω + 2|Im Ω|(1 + √(1+ρ²))/ρ, ρ = Re Ω/|Im Ω|."""
@@ -385,13 +396,13 @@ cdef double ray_growth(double complex Om, double b) nogil:
 
 
 cdef double complex N_lambda(double complex wbar, double complex w1, double complex w2, double complex w3,
-                             double wM, double b, double tol, int* flag, int* neval) nogil:
+                             double wM, double b, double tol, int* flag, int* neval) noexcept nogil:
     return N_lambda_gen(wbar, w1, w2, w3, wM, b, tol, flag, neval, 0, 2, NULL)
 
 
 cdef double complex N_lambda_gen(double complex wbar, double complex w1, double complex w2, double complex w3,
                                  double wM, double b, double tol, int* flag, int* neval,
-                                 int mom, int jpow, double complex* C) nogil:
+                                 int mom, int jpow, double complex* C) noexcept nogil:
     """N for any complex wbar (physical sheet Im wbar > 0; Landau continuation below).
 
     Contours in λ (singularities at λ = i/ωM: square root; λ = 2i/ωM: essential, from Γ0(b̃)):
@@ -494,12 +505,12 @@ include "_jasym.pxi"
 cdef double ZETA_ASYM = 6.0
 
 
-cdef inline double complex plasma_disp(double complex zeta) nogil:
+cdef inline double complex plasma_disp(double complex zeta) noexcept nogil:
     """Z(ζ) = i√π w(ζ), entire (Faddeeva function; accurate for all ζ)."""
     return 1j * SQRTPI * wofz(zeta)
 
 
-cdef inline double complex plasma_disp_asymp(double complex zeta) nogil:
+cdef inline double complex plasma_disp_asymp(double complex zeta) noexcept nogil:
     """Asymptotic Z(ζ): −(1/ζ) Σ (2n−1)!!/(2ζ²)^n, plus 2i√π e^{−ζ²} for Im ζ < 0 (exact relation)."""
     cdef double complex u = 1.0 / (zeta * zeta)
     cdef double complex s = 0.0
@@ -512,7 +523,7 @@ cdef inline double complex plasma_disp_asymp(double complex zeta) nogil:
     return s
 
 
-cdef inline double complex arg_disp(double complex wbar, double complex Om) nogil:
+cdef inline double complex arg_disp(double complex wbar, double complex Om) noexcept nogil:
     """ζ = √Ω on the sheet continuous with Im ω̄ > 0 (cut of the continuation along Re ω̄ = 0, Im ω̄ < 0).
     On the real ω̄ axis the physical limit Im ω̄ → 0⁺ is taken (the original code jumped sheets there)."""
     cdef double angle
@@ -528,7 +539,7 @@ cdef inline double complex arg_disp(double complex wbar, double complex Om) nogi
     return z
 
 
-cdef void Jfuncs(double complex z, double complex Z, bint asym, double complex* J) nogil:
+cdef void Jfuncs(double complex z, double complex Z, bint asym, double complex* J) noexcept nogil:
     """J11, ∂aJ11, ∂bJ11, ∂²abJ11, ∂²b²J11 as functions of ζ (closed forms of the old code).
 
     Each J is a quadratic α + β s + γ s² in s = ζ Z(ζ). For |ζ| ≥ ZETA_ASYM (or asym) the
@@ -592,7 +603,7 @@ cdef void Jfuncs(double complex z, double complex Z, bint asym, double complex* 
 
 
 cdef double complex N_Z(double complex omega, double complex oE, double complex oEpar, double complex oEprp,
-                        double wM, double b, double tau, double ap, double aq, bint asym) nogil:
+                        double wM, double b, double tau, double ap, double aq, bint asym) noexcept nogil:
     """O(b) closed form of N (the quantity K of the old code): D_ISM = (τ + 1 − Γ0(b) − K)/τ."""
     cdef double complex wbar = omega - oE
     cdef double complex Om, z, Z
@@ -691,7 +702,7 @@ cdef struct YP:
     double complex Rp[2]
 
 
-cdef double complex D_ism_yp(YP* p, double complex y) nogil:
+cdef double complex D_ism_yp(YP* p, double complex y) noexcept nogil:
     cdef double complex oE = -p.A * csin(y)
     cdef double complex oEpar = -p.A * csin(y + p.dpar)
     cdef double complex oEprp = -p.A * csin(y + p.dprp)
@@ -707,7 +718,7 @@ cdef double complex D_ism_yp(YP* p, double complex y) nogil:
     return (p.tau + 1.0 - p.g0b - N) / p.tau
 
 
-cdef double complex y_f(double t, void* vp) nogil:
+cdef double complex y_f(double t, void* vp) noexcept nogil:
     cdef YP* p = <YP*> vp
     cdef double complex y = t + 1j * p.sgnA * p.eta * cos(t)
     cdef double complex dy = 1.0 - 1j * p.sgnA * p.eta * sin(t)
@@ -721,14 +732,14 @@ cdef double complex y_f(double t, void* vp) nogil:
     return f * dy
 
 
-cdef double complex dD_dy(YP* p, double complex y) nogil:
+cdef double complex dD_dy(YP* p, double complex y) noexcept nogil:
     """dD_ISM/dy by the fourth-order central difference (D_ISM is analytic in y)."""
     cdef double h = 1e-3
     return (-D_ism_yp(p, y + 2 * h) + 8 * D_ism_yp(p, y + h) - 8 * D_ism_yp(p, y - h)
             + D_ism_yp(p, y - 2 * h)) / (12 * h)
 
 
-cdef void find_poles(YP* p, double dmax) nogil:
+cdef void find_poles(YP* p, double dmax) noexcept nogil:
     """Locate up to two zeros y_p of D_ISM(y) with |Im y_p| < 0.5 (Newton from the smallest sampled
     |D_ISM| on a 24-point grid) and store the residues R = −1/D'(y_p) of (D − 1)/D."""
     cdef double complex Dk[24]
@@ -781,7 +792,7 @@ cdef void find_poles(YP* p, double dmax) nogil:
         p.npole += 1
 
 
-cdef double deformation(double complex omega, double A, double eta_max, int* pinch) nogil:
+cdef double deformation(double complex omega, double A, double eta_max, int* pinch) noexcept nogil:
     """Smallest safe η keeping the branch points y* (ω̄ = 0) on their Im ω > 0 sides."""
     if cimag(omega) > 0 or A == 0.0:
         return 0.0
@@ -811,7 +822,7 @@ cdef double complex y_avg_one(double complex omega, double A, double wM, double 
                               double eta_par, double eta_prp, double delta_par, double delta_prp,
                               int form, int contour, double eta_fixed, double eta_max,
                               double epsabs, double epsrel, double tolN, bint asym, int limit,
-                              bint subtract_poles, int* flag_out, long* nev_out) nogil:
+                              bint subtract_poles, int* flag_out, long* nev_out) noexcept nogil:
     cdef YP p
     cdef double pts[8]
     cdef int npts, ier = 0, pinch = 0, j, k
@@ -907,7 +918,7 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
 
 cdef void point_fields(double complex omega, double complex y, double A, double wM, double b, double tau,
                        double ap, double aq, double dpar, double dprp, int form, double tolN,
-                       bint want_P, double complex* phi, double complex* P, int* flag) nogil:
+                       bint want_P, double complex* phi, double complex* P, int* flag) noexcept nogil:
     """φ̂ = ⟨φ⟩/D_ISM (with ⟨φ⟩ = 1) and the paper's pressure moment P̂ = T∫d³v (v∥²+v⊥²/2)/v_th² ĝ
     (eq. 38, gyrocenter ĝ = J0 F_M φ̂ (ω1 + 2ω2 v∥² + ω3 v⊥²)/(ω̄ − ω_M E))."""
     cdef YP p

@@ -8,6 +8,8 @@ primary phase; for Im ω ≤ 0 it is taken on a deformed contour that analytical
 """
 import warnings
 import numpy as np
+
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz    # numpy ≥ 2: trapezoid; < 2: trapz
 from . import _kernels
 
 _XGK21 = np.array([0.995657163025808080735527280689003, 0.973906528517171720077964012084452,
@@ -221,7 +223,7 @@ class ModeStructure:
 
     def flux_surface_average(self):
         """⟨f⟩_ψ = ∫ w(z) ⟨f⟩_y dz (trapezoid on the z grid)."""
-        return np.trapz(self.weight * self.y_average, self.z)
+        return _trapezoid(self.weight * self.y_average, self.z)
 
 
 def _mode_structure(self, omega, kx, quantity="potential", nz=129, ny=128, z=None, y=None):
@@ -246,7 +248,7 @@ def _mode_structure(self, omega, kx, quantity="potential", nz=129, ny=128, z=Non
                                          self.eta_par, self.eta_prp, self.delta_par, self.delta_prp,
                                          FORMS[self.form], self.tolN, quantity != "potential", self.nthreads)
     w = g.weight(z)
-    phi_avg = np.trapz(w * phi.mean(axis=1), z)
+    phi_avg = _trapezoid(w * phi.mean(axis=1), z)
     if quantity == "potential":
         f = phi
     elif quantity == "pressure":

@@ -14,8 +14,8 @@ Gaussian primary; lines from this solver, crosses from stella gyrokinetic simula
 
 ## Installation
 
-Requirements: Python ≥ 3.8 and a C compiler (gcc, clang or Intel). Numpy, scipy and Cython (< 3) are
-installed automatically.
+Requirements: Python ≥ 3.8 and a C compiler (gcc, clang or Intel); tested with Python 3.8 (numpy 1.24,
+scipy 1.10) and 3.13 (numpy 2.5, scipy 1.18). Numpy, scipy and Cython (≥ 3) are installed automatically.
 
 ```bash
 git clone https://github.com/richardnies/TSM_solver.git TSM_solver
@@ -26,8 +26,10 @@ pip install ".[plot]"          # or: pip install -e ".[plot,test]" to develop an
 Optional extras: `stella` (f90nml, netCDF4: read stella runs and decks), `vmec` (simsopt: VMEC
 equilibria), `plot` (matplotlib, for the examples), `test` (pytest, mpmath). The build uses OpenMP when
 the compiler supports `-fopenmp` and prints `building with OpenMP`; otherwise it runs single-threaded
-(Apple clang: install `libomp` or set `CC=gcc-13`). Without installing, `python setup.py build_ext --inplace`
-builds the extension inside the source tree.
+(the message `clang: error: unsupported option '-fopenmp'` from Apple clang is this check and harmless; for
+OpenMP on macOS install `libomp` or build with a gcc, e.g. `CC=gcc-14 pip install ...`). Without installing,
+`python setup.py build_ext --inplace` builds the extension inside the source tree; it needs Cython ≥ 3 in the
+environment (`pip install "cython>=3"`).
 
 ## Quickstart
 

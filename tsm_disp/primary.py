@@ -6,6 +6,8 @@ Amplitude conventions are documented in README.md §Amplitude; `stella_phiP` con
 """
 import numpy as np
 
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz    # numpy ≥ 2: trapezoid; < 2: trapz
+
 #: Factor used by the historical drivers: Φ_P = 0.3557 × (plot label "A^P"); see README §Amplitude.
 PHI_P_PER_LABEL_LEGACY = 0.3557
 
@@ -14,7 +16,7 @@ def legacy_gaussian_norm(width=np.pi, center=0.0):
     """fac_norm of the old drivers: RMS over a uniform θ grid of exp(−((θ−θ0)/width)²) (trapz, 1000 pts)."""
     th = np.linspace(-np.pi, np.pi, 1000)
     f = np.exp(-((th - center) / width)**2)
-    return np.sqrt(np.trapz(f**2) / np.trapz(np.ones_like(f)))
+    return np.sqrt(_trapezoid(f**2) / _trapezoid(np.ones_like(f)))
 
 
 class Primary:

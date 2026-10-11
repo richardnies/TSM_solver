@@ -17,9 +17,14 @@ from Cython.Build import cythonize
 def has_openmp():
     if os.environ.get("TSM_NO_OPENMP"):
         return False
-    from distutils.ccompiler import new_compiler
-    from distutils.sysconfig import customize_compiler
-    from distutils.errors import CompileError, LinkError
+    try:                                   # Python >= 3.12 has no distutils; setuptools vendors it
+        from setuptools._distutils.ccompiler import new_compiler
+        from setuptools._distutils.sysconfig import customize_compiler
+        from setuptools._distutils.errors import CompileError, LinkError
+    except ImportError:
+        from distutils.ccompiler import new_compiler
+        from distutils.sysconfig import customize_compiler
+        from distutils.errors import CompileError, LinkError
     cc = new_compiler()
     customize_compiler(cc)
     d = tempfile.mkdtemp()
