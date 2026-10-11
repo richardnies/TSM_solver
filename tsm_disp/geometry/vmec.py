@@ -28,6 +28,7 @@ def vmec(wout, *, torflux=None, s=None, alpha0=0.0, zeta_center=0.0, nfield_peri
     gds22 = fl.gds22[0, 0]
     gb0 = fl.gbdrift0[0, 0]
     gb, cv = fl.gbdrift[0, 0], fl.cvdrift[0, 0]
+    gpsi2 = fl.grad_psi_dot_grad_psi[0, 0]
     shat = float(fl.shat[0])
     q = 1.0 / float(fl.iota[0])
     dz_dzeta = nfp / nfield_periods
@@ -43,6 +44,7 @@ def vmec(wout, *, torflux=None, s=None, alpha0=0.0, zeta_center=0.0, nfield_peri
         fl2 = vmec_fieldlines(vs, s, alpha0, phi1d=zeta_of_z, phi_center=0.0)
         bmag, gds22, gb0 = fl2.bmag[0, 0], fl2.gds22[0, 0], fl2.gbdrift0[0, 0]
         gb, cv = fl2.gbdrift[0, 0], fl2.cvdrift[0, 0]
+        gpsi2 = fl2.grad_psi_dot_grad_psi[0, 0]
         gradpar = np.full_like(zgrid, 2 * np.pi / L)
         z = zgrid
         zeta = zeta_of_z
@@ -58,7 +60,11 @@ def vmec(wout, *, torflux=None, s=None, alpha0=0.0, zeta_center=0.0, nfield_peri
                                                                                   zeta_center, nfield_periods))
     # k_y ≠ 0 drifts (not used by the solver) and the field-line length, for diagnostics:
     # stella's ω_d,y contains ½ k_y (cvdrift v∥² + gbdrift v⊥²/2), so v_My = gbdrift/2 when cvdrift = gbdrift
-    geo.extra = dict(gbdrift=np.asarray(gb), cvdrift=np.asarray(cv), zeta=np.asarray(zeta), length=float(L))
+    # |∇ρ| with ρ = √s = √(ψ/ψ_edge), in 1/L_ref (stella's grho)
+    grho = np.sqrt(gpsi2) * fl.L_reference / (2 * np.sqrt(s) * abs(fl.edge_toroidal_flux_over_2pi))
+    geo.extra = dict(gbdrift=np.asarray(gb), cvdrift=np.asarray(cv), zeta=np.asarray(zeta), length=float(L),
+                     grho=np.asarray(grho))
+    geo.sign_torflux = int(np.sign(fl.edge_toroidal_flux_over_2pi))
     geo.params = dict(wout=str(wout), s=s, alpha0=alpha0, zeta_center=zeta_center, nfield_periods=nfield_periods,
                       nfp=nfp, iota=1 / q)
     return geo

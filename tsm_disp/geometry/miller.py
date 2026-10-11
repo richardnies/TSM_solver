@@ -121,6 +121,7 @@ def miller(rhoc=0.5, rmaj=2.77778, rgeo=None, shift=0.0, qinp=1.4, shat=0.796, k
                           q=qinp, eps=rhoc / rmaj, rmaj=rmaj, exb_nonlin_fac=exb, periodic=(nperiod == 1),
                           name="miller rhoc=%g rmaj=%g q=%g shat=%g kappa=%g tri=%g" % (rhoc, rmaj, qinp, shat, kappa, tri),
                           extra=a)
+    g.sign_torflux = -1                                  # stella's Miller convention
     g.params = dict(rhoc=rhoc, rmaj=rmaj, rgeo=rgeo if rgeo is not None else rmaj, shift=shift, qinp=qinp,
                     shat=shat, kappa=kappa, kapprim=kapprim, tri=tri, triprim=triprim, nzed_local=nzed_local,
                     nperiod=nperiod, zed_equal_arc=zed_equal_arc)

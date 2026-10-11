@@ -10,6 +10,7 @@ Run (≈ 10–60 s depending on the number of cores):
 
     python examples/tsm_kx_scan.py                # writes examples/output/tsm_kx_scan.{txt,png,pdf}
     python examples/tsm_kx_scan.py --help         # options (amplitude, k_x range, threads, ...)
+    python examples/tsm_kx_scan.py --Q 1159 --ky-P 0.001 --delta 0.5  # amplitude from the primary heat flux (Φ_P = 0.723)
 
 Output units: k_x in 1/ρ_i, frequencies in v_th/a with v_th = √(2T/m) (stella units); the plot shows
 ω R/v_th as in the paper. Markers: stella gyrokinetic simulations of the same case (Θ = 0.2886 runs).
@@ -40,6 +41,12 @@ STELLA_OMEGA = np.array([0.1043 + 0.0675j, 0.2168 + 0.1374j, 0.3347 + 0.2031j, 0
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--Phi-P", type=float, default=0.72314, help="primary E×B amplitude (ρ_i v_th/a)")
+    ap.add_argument("--Q", type=float, default=None,
+                    help="set the amplitude instead by the primary's ion heat flux in stella's gyro-Bohm units "
+                         "(needs --delta ≠ 0 and --ky-P)")
+    ap.add_argument("--ky-P", type=float, default=1e-3, help="primary binormal wavenumber (for --Q; stella 1/y0)")
+    ap.add_argument("--delta", type=float, default=0.0,
+                    help="phase Δ∥ = Δ⊥ of the primary temperature relative to φ (stella: −den0_phase)")
     ap.add_argument("--q", type=float, default=20.0, help="safety factor")
     ap.add_argument("--kx-min", type=float, default=0.1)
     ap.add_argument("--kx-max", type=float, default=0.8)
@@ -55,8 +62,13 @@ def main():
     geo = miller(rhoc=0.5, rmaj=2.77778, rgeo=2.77778, qinp=a.q, shat=0.8, kappa=1.0, zed_equal_arc=True)
     # 2. primary: v_Ex = −Φ_P T_P(z) sin y with T_P a Gaussian of width π normalised to unit RMS
     pri = Primary.gaussian(a.Phi_P, width=np.pi)
+    if a.Q is not None:          # amplitude from the primary heat flux (stella's qflx normalisation)
+        pri = pri.with_heat_flux(a.Q, geo, a.ky_P, eta_par=3.0, eta_prp=3.0, delta_par=a.delta, delta_prp=a.delta)
+        a.Phi_P = pri.Phi_P
+        print("Q = %g, k_y^P = %g, Δ = %g  ->  Phi_P = %.5f" % (a.Q, a.ky_P, a.delta, a.Phi_P))
     # 3. dispersion relation (λ form: exact finite-Larmor-radius effects)
-    disp = DispersionRelation(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, form="lambda",
+    disp = DispersionRelation(geo, pri, tau=1.0, eta_par=3.0, eta_prp=3.0, delta_par=a.delta, delta_prp=a.delta,
+                              form="lambda",
                               epsabs=a.tol, epsrel=a.tol, nthreads=a.nthreads, warn=False)
 
     # 4. follow the root from kx-start up and down by continuation
@@ -102,7 +114,7 @@ def plot(kx, omega, R, a):
     fig, axs = plt.subplots(1, 2, figsize=(20, 8))
     for ax, part, lab in [(axs[0], np.real, r"$\omega_r R/v_{th}$"), (axs[1], np.imag, r"$\gamma R/v_{th}$")]:
         ax.plot(kx, part(omega) * R, "-", lw=3, c="C0", label="TSM\\_solver (theory)" if plt.rcParams["text.usetex"] else "TSM_solver (theory)")
-        if abs(a.q - 20) < 1e-12 and abs(a.Phi_P - 0.72314) < 1e-4:
+        if abs(a.q - 20) < 1e-12 and abs(a.Phi_P - 0.72314) < 1e-4 and a.delta == 0:
             ax.plot(STELLA_KX, part(STELLA_OMEGA) * R, "x", ms=14, mew=3, c="k", label="stella (gyrokinetic)")
         ax.set_xlabel(r"$k_x \rho_i$")
         ax.set_ylabel(lab)

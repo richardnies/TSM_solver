@@ -16,6 +16,7 @@ class Geometry:
     eps = None
     rmaj = None
     exb_nonlin_fac = None
+    sign_torflux = None          # stella's sign of the toroidal flux (−1 for Miller), for flux diagnostics
     name = "geometry"
 
     def vMx(self, z):
@@ -31,15 +32,30 @@ class Geometry:
         """FLR parameter b = k_x² |∇x|² ρ²/2 at k_y = 0."""
         return 0.5 * kx**2 * self.kperp2_kx2(z)
 
+    def grho(self, z):
+        """|∇ρ| in 1/a (ρ = r/a for Miller, √(ψ_t/ψ_t,edge) for VMEC): stella's grho, used to normalise fluxes."""
+        raise NotImplementedError("%s does not provide |∇ρ| (grho); pass grho= explicitly" % type(self).__name__)
+
     def breakpoints(self):
         """Interior points where the θ quadrature should start a new panel."""
         return []
 
-    def average(self, f, n=4097):
-        """Field-line average ⟨f⟩ = ∫ weight f dz of a vectorised callable (composite Simpson)."""
-        z = np.linspace(self.zmin, self.zmax, n)
-        from scipy.integrate import simpson
-        return simpson(self.weight(z) * f(z), x=z)
+    def average(self, f, n=4097, points=()):
+        """Field-line average ⟨f⟩ = ∫ weight f dz of a vectorised callable: Gauss–Legendre panels (32 nodes,
+        about n nodes in total) on each interval between the geometry's breakpoints and the extra `points`
+        (e.g. the jumps of a primary's T_P). The nodes are interior, so f is never sampled at a jump."""
+        x, w = np.polynomial.legendre.leggauss(32)
+        cuts = sorted({float(p) for p in list(self.breakpoints()) + list(points) if self.zmin < p < self.zmax})
+        edges = [self.zmin] + cuts + [self.zmax]
+        L = self.zmax - self.zmin
+        total = 0.0
+        for a, b in zip(edges[:-1], edges[1:]):
+            k = max(1, int(np.ceil(n / 32 * (b - a) / L)))
+            e = np.linspace(a, b, k + 1)
+            c, h = 0.5 * (e[1:] + e[:-1]), 0.5 * np.diff(e)
+            z = (c[:, None] + h[:, None] * x[None, :]).ravel()
+            total += np.sum((self.weight(z) * f(z)).reshape(k, 32) * w[None, :] * h[:, None])
+        return total
 
     def __repr__(self):
         return "<%s %s z∈[%.3f, %.3f]%s>" % (type(self).__name__, self.name, self.zmin, self.zmax,
@@ -127,3 +143,13 @@ class TabulatedGeometry(Geometry):
 
     def weight(self, z):
         return self._jac(z) / self._jnorm
+
+    def grho(self, z):
+        if "grho" not in self.extra:
+            return Geometry.grho(self, z)
+        if not hasattr(self, "_grho"):
+            f = np.asarray(self.extra["grho"], float).copy()
+            if self.periodic:
+                f[-1] = f[0]
+            self._grho = self._interp(self.z_grid, f)
+        return self._grho(z)

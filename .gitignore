@@ -15,3 +15,7 @@ build/
 .venv/
 dist/
 examples/output/
+# heat-flux check runs: keep only the decks and stella's flux output
+benchmarks/heat_flux/runs/*/*
+!benchmarks/heat_flux/runs/*/CBC.in
+!benchmarks/heat_flux/runs/*/CBC.fluxes

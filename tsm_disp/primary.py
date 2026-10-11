@@ -36,6 +36,23 @@ class Primary:
         """Φ_P T_P(z): local amplitude of v_Ex."""
         return self.Phi_P * self(z)
 
+    def with_amplitude(self, Phi_P):
+        """Copy of this primary (same T_P) with amplitude Φ_P."""
+        import copy
+        p = copy.copy(self)
+        p.Phi_P = float(Phi_P)
+        return p
+
+    def with_heat_flux(self, Q, geometry, ky_P, eta_par=0.0, eta_prp=0.0, delta_par=0.0, delta_prp=0.0, **kw):
+        """Copy of this primary (same T_P) whose amplitude Φ_P gives the field-line-averaged ion heat flux Q
+        of stella's diagnostic (gyro-Bohm units, see heat_flux_stella; keyword arguments are passed on).
+        The phases Δ must give a heat flux of the sign of Q (it vanishes for Δ∥ = Δ⊥ = 0)."""
+        q1 = heat_flux_stella(self.with_amplitude(1.0), geometry, ky_P, eta_par, eta_prp, delta_par, delta_prp, **kw)
+        if q1 == 0 or Q / q1 <= 0:
+            raise ValueError("the primary's heat flux per unit Φ_P² is %g (phases Δ∥ = %g, Δ⊥ = %g): "
+                             "it cannot give Q = %g" % (q1, delta_par, delta_prp, Q))
+        return self.with_amplitude(np.sqrt(Q / q1))
+
     @classmethod
     def constant(cls, Phi_P):
         return cls(lambda z: 1.0, Phi_P, name="constant")
@@ -122,4 +139,44 @@ def A_P(primary, geometry, rmaj=None):
     stella amplitude; for the CBC Gaussian primary A_label ≈ 1.37 × A^P(21) (README §Amplitude).
     """
     R = rmaj if rmaj is not None else geometry.rmaj
-    return R * primary.Phi_P * np.sqrt(geometry.average(lambda z: primary(z)**2) / 2.0)
+    TP2 = geometry.average(lambda z: primary(z)**2, points=getattr(primary, "breakpoints", []))
+    return R * primary.Phi_P * np.sqrt(TP2 / 2.0)
+
+
+def heat_flux_stella(primary, geometry, ky_P, eta_par=0.0, eta_prp=0.0, delta_par=0.0, delta_prp=0.0, *,
+                     exb_nonlin_fac=None, sign_torflux=None, flux_norm=True, grho=None):
+    """Ion heat flux of the frozen primary as stella's diagnostic `qflx` reports it (stella_diagnostics.f90:
+    get_fluxes / get_one_flux), in gyro-Bohm units Q/(n T v_th ρ*²) with v_th = √(2T/m).
+
+    stella computes, for each Fourier mode and summed along the field line with its Jacobian,
+        qflx = −s_ψ · ½ · mode_fac · k_y · Im[∫d³v (v∥² + v⊥²) J₀ g · φ*] · flx_norm(z),
+    flx_norm = jacob Δz / Σ(jacob Δz grho) (flux_norm = .true., stella's default) and mode_fac = 2 for k_y > 0.
+    For the primary of a `secondary = .true.` run, g = phiinit φ0(z)[den0 e^{i den0_phase} + tpar0(v∥² − ½)
+    + tperp0(v⊥² − 1)]F_M and φ = phiinit φ0 den0 e^{i den0_phase} (k_y^P ρ → 0, T_e = T_i). With the
+    Maxwellian moments ∫(v∥²+v⊥²)(v∥²−½)F_M = ½ and ∫(v∥²+v⊥²)(v⊥²−1)F_M = 1, the solver's amplitude
+    Φ_P T_P = 2 f_exb k_y^P |φ| (stella_phiP), η = t0/den0 and phases Δ∥ = Δ⊥ = −den0_phase, this is
+
+        Q = −s_ψ (½ η∥ sin Δ∥ + η⊥ sin Δ⊥) Φ_P² ⟨T_P²⟩ / (4 f_exb² k_y^P ⟨|∇ρ|⟩),
+
+    with ⟨·⟩ the field-line average (geometry.average, stella's jacob weight), s_ψ = sign_torflux (−1 for
+    Miller), f_exb = exb_nonlin_fac and ⟨|∇ρ|⟩ → 1 if flux_norm is False. Checked against stella runs in
+    benchmarks/heat_flux (CBC and shaped Miller, several phases, η, widths and k_y^P).
+
+    ky_P: the primary's binormal wavenumber (stella 1/y0) — Q ∝ Φ_P²/k_y^P at fixed E×B amplitude.
+    exb_nonlin_fac, sign_torflux: default from the geometry; grho: callable |∇ρ|(z), default geometry.grho.
+    """
+    f = exb_nonlin_fac if exb_nonlin_fac is not None else geometry.exb_nonlin_fac
+    if f is None:
+        raise ValueError("exb_nonlin_fac is not known for this geometry; pass exb_nonlin_fac=")
+    s = sign_torflux if sign_torflux is not None else geometry.sign_torflux
+    if s is None:
+        raise ValueError("sign_torflux is not known for this geometry; pass sign_torflux=")
+    pts = getattr(primary, "breakpoints", [])
+    TP2 = geometry.average(lambda z: primary(z)**2, points=pts)
+    if flux_norm:
+        gr = grho if grho is not None else geometry.grho
+        norm = geometry.average(lambda z: gr(z))
+    else:
+        norm = 1.0
+    drive = 0.5 * eta_par * np.sin(delta_par) + eta_prp * np.sin(delta_prp)
+    return -s * drive * primary.Phi_P**2 * TP2 / (4.0 * f**2 * ky_P * norm)

@@ -189,6 +189,38 @@ is `primary.A_P`. For the Gaussian CBC primary $`A^P = (R/a)\,\Phi_P\sqrt{\langl
 so a legacy label $`\mathcal A`$ corresponds to $`A^P = 0.732\,\mathcal A`$. The labels follow a different
 convention from eq. (21), and the paper's quoted values should be checked against it.
 
+### Amplitude from the primary heat flux
+
+Instead of $`\Phi_P`$ or $`A^P`$, the primary can be set by its flux-surface-averaged ion heat flux $`Q`$ in
+stella's normalisation (the `qflx` of the `.fluxes` file, gyro-Bohm units $`Q/(n T v_{th}\rho_*^2)`$).
+A frozen primary carries heat flux only if its temperature perturbation is out of phase with $`\varphi`$
+(phases $`\Delta_\parallel, \Delta_\perp`$; stella: $`\Delta = -`$`den0_phase`). stella's diagnostic
+(`get_fluxes`: $`-s_\psi\,\tfrac12\,\mathrm{mode\_fac}\,k_y\,\mathrm{Im}[\int d^3v\,(v_\parallel^2+v_\perp^2)J_0 g\,\varphi^*]`$,
+weighted with the Jacobian and divided by $`\langle|\nabla\rho|\rangle`$) gives, for $`k_y^P\rho \to 0`$ and $`T_e = T_i`$,
+
+```math
+Q = -s_\psi\,\Big(\tfrac12\eta_\parallel\sin\Delta_\parallel + \eta_\perp\sin\Delta_\perp\Big)\,
+\frac{\Phi_P^2\,\langle T_P^2\rangle}{4 f_{\rm exb}^2\,k_y^P\,\langle|\nabla\rho|\rangle},
+```
+
+with $`s_\psi`$ = `sign_torflux` (−1 for Miller), $`f_{\rm exb}`$ = `exb_nonlin_fac` and $`\langle\cdot\rangle`$ the
+field-line average. At fixed E×B amplitude $`Q \propto \Phi_P^2/k_y^P`$, so the primary's binormal wavenumber
+must be given:
+
+```python
+pri = Primary.gaussian(1.0, width=np.pi).with_heat_flux(Q=1159, geometry=geo, ky_P=1e-3, eta_par=3, eta_prp=3,
+                                                        delta_par=0.5, delta_prp=0.5)     # Φ_P = 0.7232
+disp = DispersionRelation(geo, pri, eta_par=3, eta_prp=3, delta_par=0.5, delta_prp=0.5)  # same η and Δ
+heat_flux_stella(pri, geo, 1e-3, 3, 3, 0.5, 0.5)                                         # → 1159
+```
+
+`python examples/tsm_kx_scan.py --Q 1159 --ky-P 0.001 --delta 0.5` does the $`k_x`$ scan this way.
+Checked against 3-step stella runs of the frozen primary (`benchmarks/heat_flux/`, CBC and shaped Miller,
+$`\Delta = \pm`$, $`\eta_\parallel = 0`$ or $`\eta_\perp`$ = 0, $`k_y^P`$ = 0.001 and 0.005): agreement to
+1.0–1.1e-4 (stella's 5 printed digits) with `vperp_max = 4.5`. With stella's default `vperp_max = 3` its
+$`v_\perp`$ integral is truncated and its `qflx` is 0.1–0.3 % low (the temperature perturbation leaks into the
+density and $`\varphi`$ at the 1e-3 level).
+
 ## More usage
 
 ```python
@@ -206,7 +238,7 @@ disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, form="lambda", 
                           epsabs=1e-8, epsrel=1e-8, nthreads=32)
 scan = scan_kx(disp, np.linspace(0.1, 1, 10), root.omega)                   # continuation in k_x
 disp.D_ism(omega, kx, z, y)                                                  # local response, eq. (31)
-from tsm_disp.primary import stella_phiP, A_P                                # amplitude conversions
+from tsm_disp.primary import stella_phiP, A_P, heat_flux_stella              # amplitude conversions
 ```
 
 **Drivers of the original code** (`code_eval_disp_NEW/disp_rel.py`): point their `sys.path.append(...)` to

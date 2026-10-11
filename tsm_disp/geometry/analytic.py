@@ -63,6 +63,7 @@ class AnalyticGeometry(Geometry):
         B(θ)         B/B_ref; default 1
         jacobian(θ)  1/(B·∇θ) up to a constant (the field-line average weight); default 1/B(θ),
                      i.e. b·∇θ uniform. The weight is normalised to ∫ weight dθ = 1.
+        grho(θ)      optional |∇ρ| (1/a), only for the flux normalisation of primary.heat_flux_stella
 
     Each argument is a vectorised callable or a constant. `breakpoints` lists interior angles where the
     θ quadrature should start a new panel (discontinuities or sharp features of the functions).
@@ -71,13 +72,16 @@ class AnalyticGeometry(Geometry):
     gradx=lambda t: 1 + 0.18*np.cos(t), jacobian=lambda t: 1 + 0.18*np.cos(t)).
     """
 
-    def __init__(self, vMx, gradx=1.0, B=1.0, jacobian=None, *, zmin=-np.pi, zmax=np.pi, periodic=True,
-                 breakpoints=(), shat=None, q=None, eps=None, rmaj=None, name="analytic"):
+    def __init__(self, vMx, gradx=1.0, B=1.0, jacobian=None, *, grho=None, zmin=-np.pi, zmax=np.pi, periodic=True,
+                 breakpoints=(), shat=None, q=None, eps=None, rmaj=None, exb_nonlin_fac=None, sign_torflux=None,
+                 name="analytic"):
         self._vMx, self._gradx, self._B = _as_function(vMx), _as_function(gradx), _as_function(B)
         self._jac = _as_function(jacobian) if jacobian is not None else (lambda z: 1.0 / self._B(z))
         self.zmin, self.zmax, self.periodic = float(zmin), float(zmax), periodic
         self._breakpoints = sorted(float(p) for p in breakpoints)
         self.shat, self.q, self.eps, self.rmaj = shat, q, eps, rmaj
+        self.exb_nonlin_fac, self.sign_torflux = exb_nonlin_fac, sign_torflux
+        self._grho_f = _as_function(grho) if grho is not None else None
         self.name = name
         from scipy.integrate import quad
         pts = [p for p in self._breakpoints if self.zmin < p < self.zmax] or None
@@ -98,6 +102,11 @@ class AnalyticGeometry(Geometry):
 
     def weight(self, z):
         return self._jac(z) / self._jnorm
+
+    def grho(self, z):
+        if self._grho_f is None:
+            return Geometry.grho(self, z)
+        return self._grho_f(z)
 
     def breakpoints(self):
         return list(self._breakpoints)
