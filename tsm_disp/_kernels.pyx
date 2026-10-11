@@ -15,7 +15,7 @@ All frequencies are in the units of the caller (stella: v_th/a). Variable names 
 """
 cimport cython
 from cython.parallel cimport prange, parallel
-from libc.math cimport sqrt, exp, log, fabs, cos, sin, M_PI
+from libc.math cimport sqrt, exp, log, fabs, cos, sin, pow, M_PI
 from scipy.special.cython_special cimport wofz as _sp_wofz, iv as _sp_iv, ive as _sp_ive
 import numpy as np
 
@@ -42,6 +42,13 @@ cdef inline double cabs(double complex z) noexcept nogil:
 cdef inline double cabs2(double complex z) noexcept nogil:
     cdef double x = creal(z), y = cimag(z)
     return x * x + y * y
+
+
+cdef struct AuxHead:
+    # first fields of every integrand parameter struct (LamP, YP): when want_d is set, the integrand also
+    # writes a second component (its ω-derivative) into aux, which the quadratures integrate on the same nodes
+    double complex aux
+    int want_d
 
 # scipy's special functions through noexcept pointers: older scipy (< 1.11) declares them without `noexcept`,
 # so Cython 3 would take the GIL after every call (an exception check) and serialise the OpenMP loops
@@ -94,12 +101,17 @@ cdef double Q_GL16 = 2.5
 cdef double Q_GL48 = 1.5
 
 
-cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double* err, double* rabs) noexcept nogil:
+cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double* err, double* rabs,
+               double complex* res2) noexcept nogil:
+    """GK15 on [a, b]; res2: the Kronrod sum of the second component (AuxHead.aux), if want_d."""
+    cdef AuxHead* h = <AuxHead*> p
+    cdef bint w = h.want_d
     cdef double centr = 0.5 * (a + b)
     cdef double hl = 0.5 * (b - a)
     cdef double complex fv1[7]
     cdef double complex fv2[7]
     cdef double complex fc = f(centr, p)
+    cdef double complex rk2 = WGK[7] * h.aux if w else 0.0
     cdef double complex resg = fc * WG[3]
     cdef double complex resk = fc * WGK[7]
     cdef double resabs = WGK[7] * cabs(fc)
@@ -110,7 +122,11 @@ cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double*
         jtw = 2 * j + 1
         absc = hl * XGK[jtw]
         fv1[jtw] = f(centr - absc, p)
+        if w:
+            rk2 = rk2 + WGK[jtw] * h.aux
         fv2[jtw] = f(centr + absc, p)
+        if w:
+            rk2 = rk2 + WGK[jtw] * h.aux
         resg = resg + WG[j] * (fv1[jtw] + fv2[jtw])
         resk = resk + WGK[jtw] * (fv1[jtw] + fv2[jtw])
         resabs = resabs + WGK[jtw] * (cabs(fv1[jtw]) + cabs(fv2[jtw]))
@@ -118,7 +134,11 @@ cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double*
         jtwm1 = 2 * j
         absc = hl * XGK[jtwm1]
         fv1[jtwm1] = f(centr - absc, p)
+        if w:
+            rk2 = rk2 + WGK[jtwm1] * h.aux
         fv2[jtwm1] = f(centr + absc, p)
+        if w:
+            rk2 = rk2 + WGK[jtwm1] * h.aux
         resk = resk + WGK[jtwm1] * (fv1[jtwm1] + fv2[jtwm1])
         resabs = resabs + WGK[jtwm1] * (cabs(fv1[jtwm1]) + cabs(fv2[jtwm1]))
     reskh = resk * 0.5
@@ -126,12 +146,13 @@ cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double*
     for j in range(7):
         resasc = resasc + WGK[j] * (cabs(fv1[j] - reskh) + cabs(fv2[j] - reskh))
     res[0] = resk * hl
+    res2[0] = rk2 * hl
     resabs = resabs * fabs(hl)
     resasc = resasc * fabs(hl)
     abserr = cabs((resk - resg) * hl)
     if resasc != 0.0 and abserr != 0.0:
         r = 200.0 * abserr / resasc
-        abserr = resasc * (1.0 if r >= 1.0 else r ** 1.5)
+        abserr = resasc * (1.0 if not (r < 1.0) else pow(r, 1.5))     # libc pow: `r ** 1.5` raises for NaN r (Cython 3)
     if resabs > UFLOW / (50.0 * EPMACH):
         if abserr < 50.0 * EPMACH * resabs:
             abserr = 50.0 * EPMACH * resabs
@@ -140,15 +161,17 @@ cdef void gk15(cfun f, void* p, double a, double b, double complex* res, double*
 
 
 cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs, double epsrel,
-                          int limit, double* abserr, int* ier, int* neval) noexcept nogil:
-    """Globally adaptive GK15 over [pts[0], pts[npts-1]] with initial breakpoints pts (sorted)."""
+                          int limit, double* abserr, int* ier, int* neval, double complex* total2) noexcept nogil:
+    """Globally adaptive GK15 over [pts[0], pts[npts-1]] with initial breakpoints pts (sorted). The mesh is
+    refined on the first component only; total2 receives the integral of the second (AuxHead), if want_d."""
     cdef double A[MAXINT]
     cdef double B[MAXINT]
     cdef double E[MAXINT]
     cdef double RA[MAXINT]
     cdef double complex V[MAXINT]
+    cdef double complex V2[MAXINT]
     cdef int n = 0, i, imax
-    cdef double complex total, vl, vr
+    cdef double complex total, vl, vr, vl2, vr2
     cdef double errsum, tol, el, er, emax, mid, ral, rar
     if limit > MAXINT:
         limit = MAXINT
@@ -157,7 +180,7 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
         if pts[i + 1] > pts[i] and n < MAXINT:
             A[n] = pts[i]
             B[n] = pts[i + 1]
-            gk15(f, p, A[n], B[n], &V[n], &E[n], &RA[n])
+            gk15(f, p, A[n], B[n], &V[n], &E[n], &RA[n], &V2[n])
             neval[0] += 15
             n += 1
     while True:
@@ -185,12 +208,14 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
             E[imax] = 0.0           # cannot refine further: accept and flag
             ier[0] = 2
             continue
-        gk15(f, p, A[imax], mid, &vl, &el, &ral)
-        gk15(f, p, mid, B[imax], &vr, &er, &rar)
+        gk15(f, p, A[imax], mid, &vl, &el, &ral, &vl2)
+        gk15(f, p, mid, B[imax], &vr, &er, &rar, &vr2)
         neval[0] += 30
         A[n] = mid
         B[n] = B[imax]
         V[n] = vr
+        V2[n] = vr2
+        V2[imax] = vl2
         E[n] = er
         RA[n] = rar
         B[imax] = mid
@@ -199,6 +224,11 @@ cdef double complex adapt(cfun f, void* p, double* pts, int npts, double epsabs,
         RA[imax] = ral
         n += 1
     abserr[0] = errsum
+    if total2 != NULL:
+        vl2 = 0.0
+        for i in range(n):
+            vl2 = vl2 + V2[i]
+        total2[0] = vl2
     return total
 
 
@@ -239,6 +269,8 @@ def py_gamma0(double complex z):
 # λ-form of N
 # ----------------------------------------------------------------------------------------------
 cdef struct LamP:
+    double complex aux       # AuxHead: ∂/∂ω̄ of the integrand (iλ × integrand), if want_d
+    int want_d
     double complex wbar
     double complex w1
     double complex w2
@@ -299,11 +331,14 @@ cdef inline double complex lam_bracket(LamP* p, double complex lam) noexcept nog
 cdef double complex lam_f(double x, void* vp) noexcept nogil:
     cdef LamP* p = <LamP*> vp
     cdef double complex lam = p.lam0 + p.dirn * x
-    return -1j * p.pref * cexp(1j * (lam - p.lam0) * p.wbar) * lam_bracket(p, lam) * p.dirn
+    cdef double complex v = -1j * p.pref * cexp(1j * (lam - p.lam0) * p.wbar) * lam_bracket(p, lam) * p.dirn
+    if p.want_d:                 # ∂/∂ω̄ e^{iλω̄} = iλ e^{iλω̄}
+        p.aux = 1j * lam * v
+    return v
 
 
 cdef double complex leg(LamP* p, double x0, double x1, double* brk, int nbrk,
-                        double tol, int* ier, int* neval) noexcept nogil:
+                        double tol, int* ier, int* neval, double complex* res2) noexcept nogil:
     cdef double pts[12]
     cdef int n = 0, i, j
     cdef double tmp, err
@@ -323,7 +358,7 @@ cdef double complex leg(LamP* p, double x0, double x1, double* brk, int nbrk,
             j -= 1
         pts[j + 1] = tmp
     cdef int ie = 0
-    cdef double complex r = adapt(lam_f, p, pts, n, tol, tol, 200, &err, &ie, neval)
+    cdef double complex r = adapt(lam_f, p, pts, n, tol, tol, 200, &err, &ie, neval, res2)
     if ie > ier[0]:
         ier[0] = ie
     return r
@@ -333,17 +368,21 @@ cdef double complex lam_g(double s, void* vp) noexcept nogil:
     """Ray integrand divided by e^{-s} (for Gauss–Laguerre); the ray is λ = lam0 + i s/ω̄."""
     cdef LamP* p = <LamP*> vp
     cdef double complex lam = p.lam0 + p.dirn * s
-    return -1j * p.pref * lam_bracket(p, lam) * p.dirn
+    cdef double complex v = -1j * p.pref * lam_bracket(p, lam) * p.dirn
+    if p.want_d:
+        p.aux = 1j * lam * v
+    return v
 
 
-cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval, bint principal=False) noexcept nogil:
+cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int* neval, double complex* res2,
+                        bint principal=False) noexcept nogil:
     """∫ along λ = lam0 + i s/ω̄, s ∈ [0, ∞): Gauss–Laguerre when the singularities λ = ik/ωM
     (k = 1, 2) are far from the ray in the sense |Im √s_k| ≥ Q, adaptive GK15 otherwise."""
     cdef double complex sk
     cdef double q = 1e300, qk, smax
     cdef double brk[4]
     cdef int k, nb = 2
-    cdef double complex acc = 0.0
+    cdef double complex acc = 0.0, acc2 = 0.0
     cdef double complex rot_save = p.rot, rh_save = p.rothalf
     cdef double complex out
     if principal:                      # sqrt continuous along this ray: principal branch
@@ -360,13 +399,19 @@ cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int*
     if q >= Q_GL16:
         for k in range(16):
             acc = acc + GLW16[k] * lam_g(GLX16[k], p)
+            if p.want_d:
+                acc2 = acc2 + GLW16[k] * p.aux
         neval[0] += 16
         out = acc
+        res2[0] = acc2
     elif q >= Q_GL48:
         for k in range(48):
             acc = acc + GLW48[k] * lam_g(GLX48[k], p)
+            if p.want_d:
+                acc2 = acc2 + GLW48[k] * p.aux
         neval[0] += 48
         out = acc
+        res2[0] = acc2
     else:
         brk[0] = 1.0
         brk[1] = 4.0
@@ -376,7 +421,7 @@ cdef double complex ray(LamP* p, double complex lam0, double tol, int* ier, int*
                 brk[nb] = creal(sk)
                 nb += 1
         smax = 40.0 + (log(cabs(p.pref)) if cabs(p.pref) > 1.0 else 0.0)
-        out = leg(p, 0.0, smax, brk, nb, tol, ier, neval)
+        out = leg(p, 0.0, smax, brk, nb, tol, ier, neval, res2)
     p.rot = rot_save
     p.rothalf = rh_save
     return out
@@ -406,13 +451,13 @@ cdef double ray_growth(double complex Om, double b) noexcept nogil:
 
 
 cdef double complex N_lambda(double complex wbar, double complex w1, double complex w2, double complex w3,
-                             double wM, double b, double tol, int* flag, int* neval) noexcept nogil:
-    return N_lambda_gen(wbar, w1, w2, w3, wM, b, tol, flag, neval, 0, 2, NULL)
+                             double wM, double b, double tol, int* flag, int* neval, double complex* dN) noexcept nogil:
+    return N_lambda_gen(wbar, w1, w2, w3, wM, b, tol, flag, neval, 0, 2, NULL, dN)
 
 
 cdef double complex N_lambda_gen(double complex wbar, double complex w1, double complex w2, double complex w3,
                                  double wM, double b, double tol, int* flag, int* neval,
-                                 int mom, int jpow, double complex* C) noexcept nogil:
+                                 int mom, int jpow, double complex* C, double complex* dN) noexcept nogil:
     """N for any complex wbar (physical sheet Im wbar > 0; Landau continuation below).
 
     Contours in λ (singularities at λ = i/ωM: square root; λ = 2i/ωM: essential, from Γ0(b̃)):
@@ -423,13 +468,16 @@ cdef double complex N_lambda_gen(double complex wbar, double complex w1, double 
       Im ω̄ ≤ 0, resonant: detour right of the singularities ([0, a], then up to a + i sgn(ωM) H),
                 then the ray, which passes above them.
     flag bits: 1 = quadrature limit reached, 2 = continuation cancellation above e^25.
+    dN (if not NULL) receives ∂N/∂ω̄ = ∫dλ λ e^{iλω̄} (bracket), integrated on the same nodes.
     """
     cdef LamP p
     cdef double complex Om, g0, g0p, sk
     cdef double sg, c, a, H, ca, ch, q
     cdef double brk[4]
     cdef int ier = 0, i, j
-    cdef double complex res = 0.0
+    cdef double complex res = 0.0, r2 = 0.0, d2 = 0.0
+    p.want_d = dN != NULL
+    p.aux = 0.0
     p.mom = mom
     p.jpow = jpow
     for i in range(3):
@@ -444,7 +492,10 @@ cdef double complex N_lambda_gen(double complex wbar, double complex w1, double 
     if wM == 0.0:                                  # no drift: N = (bracket at λ = 0)/ω̄
         p.rot = 1.0
         p.rothalf = 1.0
-        return lam_bracket(&p, 0.0) / wbar
+        res = lam_bracket(&p, 0.0) / wbar
+        if dN != NULL:
+            dN[0] = -res / wbar
+        return res
     sg = 1.0 if wM > 0 else -1.0
     p.rot = -1j * sg                               # e^{-iβ}, β = sg π/2: sqrt cut along −i sg
     p.rothalf = (1.0 + 1j * sg) / sqrt(2.0)        # e^{iβ/2}
@@ -455,22 +506,23 @@ cdef double complex N_lambda_gen(double complex wbar, double complex w1, double 
         # straight ray if the singularities are far from it (Gauss–Laguerre) or lie beyond the integrated
         # range s ≤ 40 without making Γ0(b̃) large on it; otherwise the two-leg contour avoids them
         if (not resonant) or q >= Q_GL48 or (creal(Om) > 40.0 and ray_growth(Om, b) < 4.0):
-            res = ray(&p, 0.0, tol, &ier, neval)
+            res = ray(&p, 0.0, tol, &ier, neval, &d2)
         else:
             c = 2.0 * b if 2.0 * b > 1.0 else 1.0
             a = c / fabs(wM)
             p.lam0 = 0.0
             p.dirn = 1.0
             p.pref = 1.0
-            res = leg(&p, 0.0, a, brk, 0, tol, &ier, neval)
-            res = res + ray(&p, a, tol, &ier, neval)
+            res = leg(&p, 0.0, a, brk, 0, tol, &ier, neval, &d2)
+            res = res + ray(&p, a, tol, &ier, neval, &r2)
+            d2 = d2 + r2
     else:
         if not resonant:
-            res = ray(&p, 0.0, tol, &ier, neval)
+            res = ray(&p, 0.0, tol, &ier, neval, &d2)
         elif creal(Om) > 40.0:
             # the singularities lie at |e^{iλω̄}| = e^{−Re Ω} < e^{−40}: the straight ray (with the
             # square root continuous along it) differs from the detour by a negligible loop integral
-            res = ray(&p, 0.0, tol, &ier, neval, True)
+            res = ray(&p, 0.0, tol, &ier, neval, &d2, True)
         else:
             # leg offset a minimises the cancellation e^{a|Im ω̄|} times the growth of Γ0(b̃) ~ e^{4b/c}
             # (a floor keeps the second leg away from the square-root singularity while the
@@ -493,15 +545,19 @@ cdef double complex N_lambda_gen(double complex wbar, double complex w1, double 
             p.lam0 = 0.0
             p.dirn = 1.0
             p.pref = 1.0
-            res = leg(&p, 0.0, a, brk, 0, tol, &ier, neval)
+            res = leg(&p, 0.0, a, brk, 0, tol, &ier, neval, &d2)
             p.lam0 = a
             p.dirn = 1j * sg
             p.pref = cexp(1j * a * wbar)
             brk[0] = 1.0 / fabs(wM); brk[1] = 2.0 / fabs(wM)
-            res = res + leg(&p, 0.0, H, brk, 2, tol, &ier, neval)
-            res = res + ray(&p, a + 1j * sg * H, tol, &ier, neval)
+            res = res + leg(&p, 0.0, H, brk, 2, tol, &ier, neval, &r2)
+            d2 = d2 + r2
+            res = res + ray(&p, a + 1j * sg * H, tol, &ier, neval, &r2)
+            d2 = d2 + r2
     if ier == 1:
         flag[0] |= 1
+    if dN != NULL:
+        dN[0] = d2
     return res
 
 
@@ -646,7 +702,7 @@ def N_lambda_py(double complex omega, double complex oE, double complex oEpar, d
     cdef double complex w2 = 0.5 * (wM - tau * eta_par * oEpar)
     cdef double complex w3 = 0.5 * wM - tau * eta_prp * oEprp
     cdef int flag = 0, neval = 0
-    cdef double complex N = N_lambda(wbar, w1, w2, w3, wM, b, tol, &flag, &neval)
+    cdef double complex N = N_lambda(wbar, w1, w2, w3, wM, b, tol, &flag, &neval, NULL)
     return N, flag, neval
 
 
@@ -659,7 +715,7 @@ def moment_py(double complex omega, double complex oE, double complex oEpar, dou
     Ca = np.asarray(C, dtype=complex).reshape(9)
     for i in range(9):
         Cc[i] = Ca[i]
-    cdef double complex v = N_lambda_gen(omega - oE, 0, 0, 0, wM, b, tol, &flag, &neval, 1, jpow, Cc)
+    cdef double complex v = N_lambda_gen(omega - oE, 0, 0, 0, wM, b, tol, &flag, &neval, 1, jpow, Cc, NULL)
     return v, flag, neval
 
 
@@ -690,6 +746,9 @@ def arg_disp_py(double complex wbar, double complex Om):
 # y average
 # ----------------------------------------------------------------------------------------------
 cdef struct YP:
+    double complex aux  # AuxHead: ∂/∂ω of the y-integrand, if want_d
+    int want_d
+    double complex Eaux # ∂D_ISM/∂ω at the last D_ism_yp call (if want_d)
     double complex omega
     double A            # k_x Φ_P T_P(z): ω_E = −A sin y
     double wM
@@ -710,21 +769,32 @@ cdef struct YP:
     int npole           # near-real zeros of D_ISM(y) whose poles are subtracted analytically
     double complex yp[2]
     double complex Rp[2]
+    double complex Ap[2]  # ∂/∂ω of (D−1)/D near y_p: Ap/(y−y_p)² + Cp/(y−y_p) + regular
+    double complex Cp[2]
 
 
 cdef double complex D_ism_yp(YP* p, double complex y) noexcept nogil:
     cdef double complex oE = -p.A * csin(y)
     cdef double complex oEpar = -p.A * csin(y + p.dpar)
     cdef double complex oEprp = -p.A * csin(y + p.dprp)
-    cdef double complex N, wbar, w1, w2, w3
+    cdef double complex N, wbar, w1, w2, w3, dN = 0.0
+    cdef double hh
     if p.form == 1:
         N = N_Z(p.omega, oE, oEpar, oEprp, p.wM, p.b, p.tau, p.ap, p.aq, p.asym)
+        if p.want_d:             # N_Z is cheap: fourth-order central difference in ω
+            hh = 1e-3 * (cabs(p.omega) if cabs(p.omega) > 1e-2 else 1e-2)
+            dN = (-N_Z(p.omega + 2 * hh, oE, oEpar, oEprp, p.wM, p.b, p.tau, p.ap, p.aq, p.asym)
+                  + 8 * N_Z(p.omega + hh, oE, oEpar, oEprp, p.wM, p.b, p.tau, p.ap, p.aq, p.asym)
+                  - 8 * N_Z(p.omega - hh, oE, oEpar, oEprp, p.wM, p.b, p.tau, p.ap, p.aq, p.asym)
+                  + N_Z(p.omega - 2 * hh, oE, oEpar, oEprp, p.wM, p.b, p.tau, p.ap, p.aq, p.asym)) / (12 * hh)
     else:
         wbar = p.omega - oE
         w1 = p.tau * (-oE + 0.5 * p.ap * oEpar + p.aq * oEprp)
         w2 = 0.5 * (p.wM - p.tau * p.ap * oEpar)
         w3 = 0.5 * p.wM - p.tau * p.aq * oEprp
-        N = N_lambda(wbar, w1, w2, w3, p.wM, p.b, p.tolN, &p.flag, &p.neval)
+        N = N_lambda(wbar, w1, w2, w3, p.wM, p.b, p.tolN, &p.flag, &p.neval, &dN if p.want_d else NULL)
+    if p.want_d:
+        p.Eaux = -dN / p.tau     # ∂D_ISM/∂ω (ω enters N only through ω̄ = ω − ω_E)
     return (p.tau + 1.0 - p.g0b - N) / p.tau
 
 
@@ -734,11 +804,19 @@ cdef double complex y_f(double t, void* vp) noexcept nogil:
     cdef double complex dy = 1.0 - 1j * p.sgnA * p.eta * sin(t)
     cdef double complex D = D_ism_yp(p, y)
     cdef double complex f = (D - 1.0) / D
-    cdef double complex h
+    cdef double complex h, ct, sn, fd
     cdef int k
+    if p.want_d:
+        fd = p.Eaux / (D * D)            # ∂/∂ω (D − 1)/D
     for k in range(p.npole):            # minus the periodic pole R ½cot((y − y_p)/2)
         h = 0.5 * (y - p.yp[k])
-        f = f - p.Rp[k] * 0.5 * ccos(h) / csin(h)
+        sn = csin(h)
+        ct = ccos(h) / sn
+        f = f - p.Rp[k] * 0.5 * ct
+        if p.want_d:                    # and, for ∂/∂ω, Ap ¼csc² + Cp ½cot (period integrals 0, iπ sgn Im y_p)
+            fd = fd - p.Ap[k] * 0.25 / (sn * sn) - p.Cp[k] * 0.5 * ct
+    if p.want_d:
+        p.aux = fd * dy
     return f * dy
 
 
@@ -747,6 +825,29 @@ cdef double complex dD_dy(YP* p, double complex y) noexcept nogil:
     cdef double h = 1e-3
     return (-D_ism_yp(p, y + 2 * h) + 8 * D_ism_yp(p, y + h) - 8 * D_ism_yp(p, y - h)
             + D_ism_yp(p, y - 2 * h)) / (12 * h)
+
+
+cdef void pole_coefficients(YP* p, double complex y, int k) noexcept nogil:
+    """Residue Rp = −1/D' of (D−1)/D at its pole y and, for ∂/∂ω (D−1)/D = E/D² (E = ∂D/∂ω), the Laurent
+    coefficients Ap = E/D'², Cp = (E' − E D''/D')/D'², from fourth-order central differences in y."""
+    cdef double h = 1e-3
+    cdef double complex D0, Dp1, Dm1, Dp2, Dm2, E0, Ep1, Em1, Ep2, Em2, D1, D2, E1
+    D0 = D_ism_yp(p, y)
+    E0 = p.Eaux
+    Dp1 = D_ism_yp(p, y + h)
+    Ep1 = p.Eaux
+    Dm1 = D_ism_yp(p, y - h)
+    Em1 = p.Eaux
+    Dp2 = D_ism_yp(p, y + 2 * h)
+    Ep2 = p.Eaux
+    Dm2 = D_ism_yp(p, y - 2 * h)
+    Em2 = p.Eaux
+    D1 = (-Dp2 + 8 * Dp1 - 8 * Dm1 + Dm2) / (12 * h)
+    D2 = (-Dp2 + 16 * Dp1 - 30 * D0 + 16 * Dm1 - Dm2) / (12 * h * h)
+    E1 = (-Ep2 + 8 * Ep1 - 8 * Em1 + Em2) / (12 * h)
+    p.Rp[k] = -1.0 / D1
+    p.Ap[k] = E0 / (D1 * D1)
+    p.Cp[k] = (E1 - E0 * D2 / D1) / (D1 * D1)
 
 
 cdef void find_poles(YP* p, double dmax) noexcept nogil:
@@ -798,8 +899,48 @@ cdef void find_poles(YP* p, double dmax) noexcept nogil:
         if not ok or cimag(y) == 0.0:
             continue
         p.yp[p.npole] = y
-        p.Rp[p.npole] = -1.0 / dD_dy(p, y)
+        if p.want_d:
+            pole_coefficients(p, y, p.npole)
+        else:
+            p.Rp[p.npole] = -1.0 / dD_dy(p, y)
         p.npole += 1
+
+
+cdef double complex trapezoid_periodic(cfun f, void* p, double epsabs, double epsrel, int nmax,
+                                       int* ok, int* neval, double complex* res2) noexcept nogil:
+    """∫_{-π}^{π} f(t) dt of a smooth 2π-periodic integrand by the trapezoid rule with doubling (8, 16, 32, …
+    nodes, reusing all previous nodes). Its error decays exponentially in N, so after the differences
+    d_k = |T_k − T_{k−1}| the error of T_k is ≲ d_k²/d_{k−1}; T_k is accepted when that is below the
+    tolerance and the differences decrease. ok = 0 if not accepted by nmax nodes (use the adaptive rule)."""
+    cdef AuxHead* hd = <AuxHead*> p
+    cdef bint w = hd.want_d
+    cdef int n = 8, j
+    cdef double h, d, dprev = -1.0, tol
+    cdef double complex S = 0.0, S2 = 0.0, T, Tprev
+    for j in range(n):
+        S = S + f(-M_PI + 2 * M_PI * j / n, p)
+        if w:
+            S2 = S2 + hd.aux
+    neval[0] += n
+    T = S * (2 * M_PI / n)
+    ok[0] = 0
+    while 2 * n <= nmax:
+        for j in range(n):              # midpoints of the current grid
+            S = S + f(-M_PI + 2 * M_PI * (j + 0.5) / n, p)
+            if w:
+                S2 = S2 + hd.aux
+        neval[0] += n
+        n = 2 * n
+        Tprev = T
+        T = S * (2 * M_PI / n)
+        d = cabs(T - Tprev)
+        tol = epsabs if epsabs > epsrel * cabs(T) else epsrel * cabs(T)
+        if d == 0.0 or (dprev > 0.0 and d < 0.5 * dprev and d * d <= tol * dprev):
+            ok[0] = 1
+            break
+        dprev = d
+    res2[0] = S2 * (2 * M_PI / n)
+    return T
 
 
 cdef double deformation(double complex omega, double A, double eta_max, int* pinch) noexcept nogil:
@@ -832,8 +973,14 @@ cdef double complex y_avg_one(double complex omega, double A, double wM, double 
                               double eta_par, double eta_prp, double delta_par, double delta_prp,
                               int form, int contour, double eta_fixed, double eta_max,
                               double epsabs, double epsrel, double tolN, bint asym, int limit,
-                              bint subtract_poles, int* flag_out, long* nev_out) noexcept nogil:
+                              bint subtract_poles, int* flag_out, long* nev_out, int yrule,
+                              double complex* dres) noexcept nogil:
+    """(1/2π)∫dy (D_ISM − 1)/D_ISM at one field-line point; dres (if not NULL): its ∂/∂ω.
+    yrule 1: periodic trapezoid rule with doubling (adaptive GK15 if it has not converged by 512 nodes, and
+    always for the legacy contour 1); 0: adaptive GK15."""
     cdef YP p
+    cdef int tok = 0
+    cdef double complex res2 = 0.0
     cdef double pts[8]
     cdef int npts, ier = 0, pinch = 0, j, k
     cdef double err, s, ycr, tmp
@@ -854,6 +1001,9 @@ cdef double complex y_avg_one(double complex omega, double A, double wM, double 
     p.tolN = tolN
     p.flag = 0
     p.neval = 0
+    p.want_d = dres != NULL
+    p.aux = 0.0
+    p.Eaux = 0.0
     p.eta = 0.0
     if contour == 2:
         if eta_fixed > 0:
@@ -883,10 +1033,16 @@ cdef double complex y_avg_one(double complex omega, double A, double wM, double 
     p.npole = 0
     if p.eta == 0.0 and subtract_poles:
         find_poles(&p, 0.3)
-    res = adapt(y_f, &p, pts, npts, epsabs, epsrel, limit, &err, &ier, &p.neval)
+    if yrule == 1 and contour != 1:
+        res = trapezoid_periodic(y_f, &p, epsabs, epsrel, 512, &tok, &p.neval, &res2)
+    if tok == 0:
+        res = adapt(y_f, &p, pts, npts, epsabs, epsrel, limit, &err, &ier, &p.neval, &res2)
     for k in range(p.npole):            # ∫ over a period of ½cot((y − y_p)/2) = iπ sgn(Im y_p)
         res = res + p.Rp[k] * 1j * M_PI * (1.0 if cimag(p.yp[k]) > 0 else -1.0)
+        res2 = res2 + p.Cp[k] * 1j * M_PI * (1.0 if cimag(p.yp[k]) > 0 else -1.0)
     res = res / (2 * M_PI)
+    if dres != NULL:
+        dres[0] = res2 / (2 * M_PI)
     flag_out[0] = p.flag | (4 if ier == 1 else 0) | (8 if pinch else 0) | (64 if p.npole > 0 else 0)
     nev_out[0] = p.neval
     return res
@@ -896,7 +1052,7 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
               double tau=1.0, double eta_par=0.0, double eta_prp=0.0, double delta_par=0.0, double delta_prp=0.0,
               int form=0, int contour=0, double eta_fixed=0.0, double eta_max=2.0,
               double epsabs=1e-10, double epsrel=1e-10, double tolN=1e-12, bint asym=False,
-              int limit=200, int nthreads=1, bint subtract_poles=True):
+              int limit=200, int nthreads=1, bint subtract_poles=True, int yrule=1, bint derivative=False):
     """(1/2π) ∫ dy (D_ISM − 1)/D_ISM at each field-line point i (ω_E = −A_i sin y).
 
     contour: 0 real axis; 1 real axis with breakpoints where Re ω̄ = 0 (old-code behaviour);
@@ -904,6 +1060,8 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
     Returns (values, flags, nevals); flag bits: 1 λ-quadrature limit, 2 continuation cancellation
     above e^25, 4 y-quadrature limit, 8 branch points pinch the y contour, 64 near-real zeros of D_ISM
     were found and their poles subtracted analytically (real contour only; subtract_poles).
+    yrule: 1 periodic trapezoid with doubling (default), 0 adaptive GK15. derivative: also return ∂/∂ω
+    of the y-average (computed on the same nodes) as a fourth array (else None).
     """
     cdef Py_ssize_t n = A.shape[0], i
     out = np.empty(n, dtype=np.complex128)
@@ -912,18 +1070,21 @@ def y_average(double complex omega, double[::1] A, double[::1] wM, double[::1] b
     cdef double complex[::1] out_v = out
     cdef int[::1] flags_v = flags
     cdef long[::1] nev_v = nev
+    dout = np.zeros(n, dtype=np.complex128) if derivative else np.zeros(1, dtype=np.complex128)
+    cdef double complex[::1] dout_v = dout
+    cdef bint want = derivative
     if nthreads <= 1:
         for i in range(n):
             out_v[i] = y_avg_one(omega, A[i], wM[i], b[i], tau, eta_par, eta_prp, delta_par, delta_prp,
                                  form, contour, eta_fixed, eta_max, epsabs, epsrel, tolN, asym, limit,
-                                 subtract_poles, &flags_v[i], &nev_v[i])
+                                 subtract_poles, &flags_v[i], &nev_v[i], yrule, &dout_v[i] if want else NULL)
     else:
         with nogil:
             for i in prange(n, schedule='dynamic', num_threads=nthreads):
                 out_v[i] = y_avg_one(omega, A[i], wM[i], b[i], tau, eta_par, eta_prp, delta_par, delta_prp,
                                      form, contour, eta_fixed, eta_max, epsabs, epsrel, tolN, asym, limit,
-                                     subtract_poles, &flags_v[i], &nev_v[i])
-    return out, flags, nev
+                                     subtract_poles, &flags_v[i], &nev_v[i], yrule, &dout_v[i] if want else NULL)
+    return out, flags, nev, (dout if derivative else None)
 
 
 cdef void point_fields(double complex omega, double complex y, double A, double wM, double b, double tau,
@@ -950,6 +1111,7 @@ cdef void point_fields(double complex omega, double complex y, double A, double 
     p.tolN = tolN
     p.flag = 0
     p.neval = 0
+    p.want_d = 0
     D = D_ism_yp(&p, y)
     phi[0] = 1.0 / D
     flag[0] = p.flag
@@ -968,7 +1130,7 @@ cdef void point_fields(double complex omega, double complex y, double A, double 
     C[6] = 2 * w2              # v∥⁴        (n=2, m=0)
     C[4] = w2 + w3             # v∥² v⊥²    (n=1, m=1)
     C[2] = 0.5 * w3            # v⊥⁴        (n=0, m=2)
-    P[0] = phi[0] * N_lambda_gen(omega - oE, 0, 0, 0, wM, b, tolN, flag, &neval, 1, 1, C)
+    P[0] = phi[0] * N_lambda_gen(omega - oE, 0, 0, 0, wM, b, tolN, flag, &neval, 1, 1, C, NULL)
 
 
 def mode_fields(double complex omega, double[::1] A, double[::1] wM, double[::1] b, double[::1] y,
@@ -1010,4 +1172,5 @@ def D_ism_py(double complex omega, double complex y, double A, double wM, double
     p.tolN = tolN
     p.flag = 0
     p.neval = 0
+    p.want_d = 0
     return D_ism_yp(&p, y)

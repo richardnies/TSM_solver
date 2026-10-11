@@ -33,7 +33,6 @@ except ImportError:  # running from a source checkout after `python setup.py bui
 from tsm_disp.geometry import AnalyticGeometry
 from tsm_disp.primary import Primary
 from tsm_disp.dispersion import DispersionRelation
-from tsm_disp.roots import find_root
 
 
 def min_D_ism(disp, omega, kx, n=48):
@@ -53,7 +52,7 @@ def follow(disp, kx0, w0, kmin, kmax, dk, direction, ism_stop=0.02):
             return out
         ks, ws = zip(*pts[-3:])
         guess = np.polyval(np.polyfit(ks, ws, len(ks) - 1), k) if len(ks) > 1 else ws[0] * k / ks[0]
-        r = find_root(lambda w: disp.D(w, k), guess, tol=1e-8, maxiter=25)
+        r = disp.find_root(guess, k, tol=1e-8, maxiter=25)            # Newton with the exact ∂D/∂ω
         if not r.converged or r.omega.imag <= 0 or abs(r.omega - guess) > 0.1 * abs(guess) + 0.02:
             if nhalf == 3:
                 print("kx = %.4f: no growing root near %s, stopping this direction" % (k, np.round(guess, 4)))
@@ -111,7 +110,7 @@ def main():
 
     # 4. root at kx-start, then continuation up and down in k_x
     t0 = time.time()
-    r = find_root(lambda w: disp.D(w, a.kx_start), a.guess, tol=1e-8, maxiter=40)
+    r = disp.find_root(a.guess, a.kx_start, tol=1e-8, maxiter=40)
     if not r.converged:
         sys.exit("no root found near %s at kx = %g; try another --guess" % (a.guess, a.kx_start))
     print("kx = %.4f   omega = %+.5f %+.5fi   (start)" % (a.kx_start, r.omega.real, r.omega.imag))

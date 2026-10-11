@@ -57,15 +57,18 @@ class DispersionRelation:
     y_contour : 'auto' (real for Im ω > 0, deformed otherwise), 'real', 'real_points' (old code's
         prescription: real axis split where Re ω̄ = 0), 'deformed'
     epsabs, epsrel : tolerances of the field-line integral; epsabs_y, epsrel_y of the y integral;
-        tolN of the velocity (λ) integral
+        tolN of the velocity (λ) integral (default: epsabs_y clamped to [1e-12, 1e-8]; the λ quadratures reach
+        far below their requested tolerance, so D is insensitive to it)
     nthreads : OpenMP threads for the y integrals of a batch of field-line points
     theta_panels : initial number of equal panels of the field-line integral
+    y_rule : 'trapezoid' (periodic trapezoid rule with doubling, adaptive fallback; default) or 'adaptive' (GK15)
     """
 
     def __init__(self, geometry, primary, *, tau=1.0, eta_par=0.0, eta_prp=0.0, delta_par=0.0,
                  delta_prp=0.0, form="lambda", y_contour="auto", epsabs=1e-10, epsrel=1e-10,
-                 epsabs_y=None, epsrel_y=None, tolN=1e-12, nthreads=1, theta_panels=8,
-                 asymp_J11=False, eta_fixed=0.0, eta_max=2.0, limit=400, warn=True, subtract_poles=True):
+                 epsabs_y=None, epsrel_y=None, tolN=None, nthreads=1, theta_panels=8,
+                 asymp_J11=False, eta_fixed=0.0, eta_max=2.0, limit=400, warn=True, subtract_poles=True,
+                 y_rule="trapezoid"):
         self.geometry, self.primary = geometry, primary
         self.tau, self.eta_par, self.eta_prp = float(tau), float(eta_par), float(eta_prp)
         self.delta_par, self.delta_prp = float(delta_par), float(delta_prp)
@@ -76,7 +79,11 @@ class DispersionRelation:
         self.epsabs, self.epsrel = epsabs, epsrel
         self.epsabs_y = 0.1 * epsabs if epsabs_y is None else epsabs_y
         self.epsrel_y = 0.1 * epsrel if epsrel_y is None else epsrel_y
-        self.tolN, self.nthreads = tolN, nthreads
+        self.tolN = float(np.clip(self.epsabs_y, 1e-12, 1e-8)) if tolN is None else tolN
+        self.nthreads = nthreads
+        if y_rule not in ("trapezoid", "adaptive"):
+            raise ValueError("y_rule must be 'trapezoid' or 'adaptive'")
+        self.y_rule = y_rule
         self.theta_panels, self.asymp_J11 = theta_panels, asymp_J11
         self.eta_fixed, self.eta_max, self.limit, self.warn = eta_fixed, eta_max, limit, warn
         self.subtract_poles = subtract_poles
@@ -109,13 +116,16 @@ class DispersionRelation:
         A = np.ascontiguousarray(kx * self.primary.amplitude(z), dtype=float)
         return A, kx * vMx, kx**2 * b1
 
-    def y_average(self, omega, kx, z):
-        """(1/2π)∫dy (D_ISM − 1)/D_ISM at field-line points z (array). Returns (values, flags, nevals)."""
+    def y_average(self, omega, kx, z, derivative=False):
+        """(1/2π)∫dy (D_ISM − 1)/D_ISM at field-line points z (array). Returns (values, flags, nevals), and
+        with derivative=True also its ∂/∂ω as a fourth array (same quadrature nodes)."""
         A, wM, b = self._local(np.atleast_1d(z), kx)
-        return _kernels.y_average(complex(omega), A, wM, b, self.tau, self.eta_par, self.eta_prp,
-                                  self.delta_par, self.delta_prp, FORMS[self.form], self._contour(omega),
-                                  self.eta_fixed, self.eta_max, self.epsabs_y, self.epsrel_y, self.tolN,
-                                  bool(self.asymp_J11), 200, self.nthreads, bool(self.subtract_poles))
+        out = _kernels.y_average(complex(omega), A, wM, b, self.tau, self.eta_par, self.eta_prp,
+                                 self.delta_par, self.delta_prp, FORMS[self.form], self._contour(omega),
+                                 self.eta_fixed, self.eta_max, self.epsabs_y, self.epsrel_y, self.tolN,
+                                 bool(self.asymp_J11), 200, self.nthreads, bool(self.subtract_poles),
+                                 1 if self.y_rule == "trapezoid" else 0, bool(derivative))
+        return out if derivative else out[:3]
 
     def D_ism(self, omega, kx, z, y):
         """Local kinetic response D_ISM(z, y) (eq. 31)."""
@@ -141,14 +151,17 @@ class DispersionRelation:
         edges = np.unique(np.concatenate([edges, extra]))
         return list(zip(edges[:-1], edges[1:]))
 
-    def _eval_panels(self, omega, kx, panels):
+    def _eval_panels(self, omega, kx, panels, derivative=False):
         a = np.array([p[0] for p in panels])
         bb = np.array([p[1] for p in panels])
         c = 0.5 * (a + bb)
         h = 0.5 * (bb - a)
         z = (c[:, None] + h[:, None] * _X[None, :]).ravel()
-        v, flags, nev = self.y_average(omega, kx, z)
-        f = (self._geo_at(np.ascontiguousarray(z, dtype=float))[2] * v).reshape(len(panels), 21)
+        v, flags, nev, dv = self.y_average(omega, kx, z, derivative=True) if derivative else \
+            (*self.y_average(omega, kx, z), None)
+        wz = self._geo_at(np.ascontiguousarray(z, dtype=float))[2]
+        f = (wz * v).reshape(len(panels), 21)
+        self._dvals = ((wz * dv).reshape(len(panels), 21) * _WK).sum(axis=1) * h if derivative else None
         resk = (f * _WK).sum(axis=1) * h
         resg = (f * _WGfull).sum(axis=1) * h
         mean = resk / (2 * h)
@@ -162,11 +175,15 @@ class DispersionRelation:
         self._resabs = resabs
         return resk, err, int(np.bitwise_or.reduce(flags & ~64)), int(nev.sum())
 
-    def D(self, omega, kx):
-        """Dispersion function D(ω, k_x) (eq. 32). Roots D = 0 are the secondary modes."""
+    def D(self, omega, kx, derivative=False):
+        """Dispersion function D(ω, k_x) (eq. 32). Roots D = 0 are the secondary modes.
+
+        derivative=True returns (D, ∂D/∂ω), the derivative integrated on the same nodes (the adaptive
+        refinement follows D only) at ~10–20 % extra cost; used by Newton's method in find_root."""
         panels = self._panels()
-        vals, errs, flag, nev = self._eval_panels(omega, kx, panels)
+        vals, errs, flag, nev = self._eval_panels(omega, kx, panels, derivative)
         vals, errs, rabs = list(vals), list(errs), list(self._resabs)
+        dvals = list(self._dvals) if derivative else None
         npan_eval = len(panels)
         while True:
             total = sum(vals)
@@ -190,20 +207,33 @@ class DispersionRelation:
                 a, b = panels[i]
                 m = 0.5 * (a + b)
                 new += [(a, m), (m, b)]
-            v2, e2, f2, n2 = self._eval_panels(omega, kx, new)
+            v2, e2, f2, n2 = self._eval_panels(omega, kx, new, derivative)
             flag |= f2
             nev += n2
             npan_eval += len(new)
             for k, i in enumerate(sorted(idx, reverse=True)):
                 del panels[i], vals[i], errs[i], rabs[i]
+                if derivative:
+                    del dvals[i]
             panels += new
             vals += list(v2)
             errs += list(e2)
             rabs += list(self._resabs)
+            if derivative:
+                dvals += list(self._dvals)
         self.last = dict(err=errsum, flag=flag, nevals=nev, npanels=len(panels), npanels_evaluated=npan_eval)
         if flag and self.warn:
             warnings.warn("D(ω=%s, kx=%g): flags %d (%s)" % (omega, kx, flag, describe_flags(flag)), FlagWarning)
-        return total
+        return (total, sum(dvals)) if derivative else total
+
+    def find_root(self, omega0, kx, **kw):
+        """Root of D(·, k_x) near omega0: Newton's method with the exact ∂D/∂ω (λ form), Muller's method
+        for the Z form (whose derivative is a finite difference). Keywords go to tsm_disp.roots.find_root."""
+        from .roots import find_root
+        if self.form == "lambda" and kw.pop("method", "newton") == "newton":
+            return find_root(lambda w: self.D(w, kx, derivative=True), omega0, derivative=True, **kw)
+        kw.pop("method", None)
+        return find_root(lambda w: self.D(w, kx), omega0, **kw)
 
 
 def describe_flags(flag):

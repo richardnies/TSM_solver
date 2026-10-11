@@ -87,7 +87,7 @@ def solve_curve(disp, kx_grid, guesses, tol=1e-9):
         for g in cands:
             if g is None or not np.isfinite(g):
                 continue
-            r = find_root(lambda w: disp.D(w, kx), g, tol=tol, maxiter=15)
+            r = disp.find_root(g, kx, tol=tol, maxiter=15)
             if r.converged and r.omega.imag > 0 and (best is None or abs(r.omega - g) < abs(best.omega - g)):
                 best = r
             if best is not None:

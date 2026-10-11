@@ -25,7 +25,6 @@ except ImportError:
 from tsm_disp.geometry import miller
 from tsm_disp.primary import Primary
 from tsm_disp.dispersion import DispersionRelation, QUANTITIES
-from tsm_disp.roots import find_root
 
 LABEL = {"potential": (r"\hat\phi", r"Z e \hat\phi / T"),
          "pressure": (r"\hat P", r"\hat P / n T"),
@@ -46,7 +45,7 @@ def main():
     geo = miller(rhoc=0.5, rmaj=2.77778, rgeo=2.77778, qinp=a.q, shat=0.8, zed_equal_arc=True)
     disp = DispersionRelation(geo, Primary.gaussian(a.Phi_P, width=np.pi), tau=1, eta_par=3, eta_prp=3,
                               epsabs=1e-9, epsrel=1e-9, nthreads=a.nthreads)
-    r = find_root(lambda w: disp.D(w, a.kx), a.guess, tol=1e-10)
+    r = disp.find_root(a.guess, a.kx, tol=1e-10)
     if not r.converged:
         sys.exit("no root found near %s; try --guess" % a.guess)
     print("k_x = %g: omega = %.5f %+.5fi (v_th/a)" % (a.kx, r.omega.real, r.omega.imag))

@@ -15,14 +15,19 @@ class RootResult:
     history: list = field(default_factory=list)
 
 
-def find_root(D, omega0, *, omega1=None, omega2=None, tol=1e-9, ftol=None, maxiter=60, step=None):
-    """Root of an analytic function D(ω) by Muller's method (complex, order ≈ 1.84).
+def find_root(D, omega0, *, omega1=None, omega2=None, tol=1e-9, ftol=None, maxiter=60, step=None,
+              derivative=False):
+    """Root of an analytic function D(ω): Muller's method (complex, order ≈ 1.84), or Newton's method if
+    derivative=True, in which case D(ω) returns (D, dD/dω) (e.g. lambda w: disp.D(w, kx, derivative=True);
+    disp.find_root(omega0, kx) does this).
 
     D : callable ω → complex (e.g. lambda w: disp.D(w, kx))
-    omega0 : initial guess; omega1, omega2 optional further points (default ω0 ± step).
+    omega0 : initial guess; omega1, omega2 optional further points for Muller (default ω0 ± step).
     Converged when |Δω| ≤ tol·max(1, |ω|) (and |D| ≤ ftol if given).
     """
     t0 = time.time()
+    if derivative:
+        return _newton(D, omega0, tol, ftol, maxiter, step, t0)
     if step is None:
         step = 1e-3 * max(abs(omega0), 1e-2)
     x = [complex(omega0), complex(omega1) if omega1 is not None else omega0 + step,
@@ -54,6 +59,45 @@ def find_root(D, omega0, *, omega1=None, omega2=None, tol=1e-9, ftol=None, maxit
     return RootResult(x[-1], f[-1], False, nfev, "not converged", time.time() - t0, hist)
 
 
+def _newton(DdD, omega0, tol, ftol, maxiter, step, t0):
+    """Newton's method; as soon as a full step fails to halve |D| (strong nonlinearity, e.g. next to the ISM
+    region) it hands over to Muller's method seeded with the three most recent points, so no evaluation is
+    wasted. Also falls back to Muller if the derivative vanishes or is not finite."""
+    x = complex(omega0)
+    f, df = DdD(x)
+    nfev = 1
+    hist = [(x, f)]
+    for it in range(maxiter):
+        if not (np.isfinite(f) and np.isfinite(df)) or df == 0:
+            break
+        dx = -f / df
+        if abs(dx) <= tol * max(1.0, abs(x)) and (ftol is None or abs(f) <= ftol):
+            return RootResult(x + dx, f, True, nfev, "converged (Newton)", time.time() - t0, hist)
+        xn = x + dx
+        fn, dfn = DdD(xn)
+        nfev += 1
+        hist.append((xn, fn))
+        if not (np.isfinite(fn) and abs(fn) <= 0.5 * abs(f)):
+            break
+        x, f, df = xn, fn, dfn
+    else:
+        return RootResult(x, f, False, nfev, "not converged (Newton)", time.time() - t0, hist)
+    # Muller from the last three points (one more, half a Newton step, if fewer were evaluated)
+    pts = [(xx, ff) for xx, ff in hist if np.isfinite(ff)]
+    if len(pts) < 3:
+        x2 = pts[0][0] + 0.5 * (dx if np.isfinite(dx) else (step or 1e-3 * max(abs(x), 1e-2)))
+        f2 = DdD(x2)[0]
+        nfev += 1
+        pts.append((x2, f2))
+    pts = sorted(pts[-3:], key=lambda q: -abs(q[1]))           # the best point last
+    r = find_root(lambda w: DdD(w)[0], pts[0][0], omega1=pts[1][0], omega2=pts[2][0], tol=tol, ftol=ftol,
+                  maxiter=maxiter, step=step)
+    r.nfev += nfev - 3                                          # Muller re-evaluated its three seeds
+    r.message += " (Muller after Newton)"
+    r.history = hist + r.history
+    return r
+
+
 @dataclass
 class ScanResult:
     kx: np.ndarray
@@ -82,7 +126,10 @@ def scan_kx(disp, kx_values, omega0, *, tol=1e-9, max_jump=None, extrapolate=Tru
     for i, kx in enumerate(kx_values):
         if i >= 2 and extrapolate and conv[i - 1] and conv[i - 2]:
             guess = om[i - 1] + (om[i - 1] - om[i - 2]) * (kx - kx_values[i - 1]) / (kx_values[i - 1] - kx_values[i - 2])
-        r = find_root(lambda w: disp.D(w, kx), guess, tol=tol, **kw)
+        if hasattr(disp, "find_root"):          # Newton with the exact derivative where available
+            r = disp.find_root(guess, kx, tol=tol, **kw)
+        else:
+            r = find_root(lambda w: disp.D(w, kx), guess, tol=tol, **kw)
         nfev[i], secs[i] = r.nfev, r.seconds
         if verbose:
             print("kx=%.4f omega=%s |D|=%.1e conv=%s nfev=%d %.1fs" % (kx, r.omega, abs(r.D), r.converged, r.nfev, r.seconds), flush=True)
