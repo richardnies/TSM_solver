@@ -23,7 +23,10 @@ This installs two packages: `tsm_disp`, the solver, and `evaluation_scripts`, th
 (simsopt: VMEC equilibria), `plot` (matplotlib, for the examples), `test` (pytest, mpmath). The build uses OpenMP when
 the compiler supports `-fopenmp` and prints `building with OpenMP`; otherwise it runs single-threaded
 (the message `clang: error: unsupported option '-fopenmp'` from Apple clang is this check and harmless; for
-OpenMP on macOS install `libomp` or build with a gcc, e.g. `CC=gcc-14 pip install ...`). Without installing,
+OpenMP on macOS install `libomp` or build with a gcc, e.g. `CC=gcc-14 pip install ...`). On x86-64 the kernels are
+compiled with AVX2 and FMA when the compiler and the building machine support them (`AVX2 + FMA` in the build
+output, ≈ 14 % faster); the extension then needs an AVX2 CPU (Intel since 2013, AMD Zen), so set `TSM_NO_AVX2=1`
+when building for older machines. Without installing,
 `python setup.py build_ext --inplace` builds the extension inside the source tree; it needs Cython ≥ 3 in the
 environment (`pip install "cython>=3"`), and the examples then need the repository on the path, e.g.
 `PYTHONPATH=/path/to/TSM_solver python tsm_kx_scan.py` (an editable install is cleaner: it exposes only the two
@@ -512,7 +515,10 @@ geometry interpolation no longer wakes OpenBLAS threads (2.5×); (ii) the y-aver
 rule with doubling (its error decays exponentially for the analytic periodic y-integrand; adaptive GK15
 fallback; `y_rule="adaptive"` restores the old rule) and the λ tolerance follows the requested tolerance
 (`tolN` = epsabs_y clamped to [1e-12, 1e-8]) (2.5×); (iii) `disp.find_root` uses Newton's method with
-∂D/∂ω integrated on the same nodes as D (2 % extra), pole terms included (≈ 1.5× fewer evaluations).
+∂D/∂ω integrated on the same nodes as D (2 % extra), pole terms included (≈ 1.5× fewer evaluations). (iv) Since 2026-10-12 the
+x86-64 build adds `-mavx2 -mfma`: λ-form D 0.218 → 0.185 s (1 thread) and 0.0142 → 0.0122 s (16 threads), results
+unchanged to 1e-17 (the gain is from fused multiply-add and instruction selection; the adaptive, scalar
+integrand does not vectorise, and AVX-512 (`-march=native`) gains nothing more).
 Results agree with the previous code to ≤ 1e-11 (stella-benchmark roots: 4e-11 relative).
 
 ## Changes with respect to `code_eval_disp_NEW`

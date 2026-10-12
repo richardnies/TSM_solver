@@ -7,14 +7,18 @@ From the example amplitude Φ_P = 0.723 the root is followed
   upward   to 100× larger Φ_P: once ω_RDK ≫ ω_GAM the radial magnetic drift no longer matters and the TSM becomes the
            purely growing RDK secondary mode (Nies & Parra 2026, eq. 51): ω/(k_x Φ_P) tends to the root of the same
            dispersion relation without drift (dashed), close to eq. (51)'s long-wavelength value (dotted);
-  downward until the root reaches the ISM region (local zeros of D_ISM on the surface), where D is not analytic and
-           the TSM is lost: min|D_ISM| at the root falls linearly to zero.
+  downward towards the ISM region (local zeros of D_ISM on the surface), where D is not analytic and the TSM is
+           lost: min|D_ISM| at the root falls linearly to zero. The scan stops once min|D_ISM| < ISM_STOP, shortly
+           before the region: there the field-line quadrature stops converging and each evaluation of D gets slow
+           (a root search inside the region costs about a minute). The amplitude where the region is reached is the
+           linear extrapolation of min|D_ISM| through the last three roots (≈ 0.23 for the defaults, against
+           0.222–0.234 from a guess-free search).
 
-With CONFIRM_END the end of the downward branch is checked without a guess (tsm_disp.contour_roots.find_all_roots,
-≈ 1–2 min): one step below, no root may remain near the branch.
+With CONFIRM_END the end of the downward branch is also checked without a guess (tsm_disp.contour_roots.find_all_roots,
+≈ 2 more minutes): one step below the last root, no root may remain near the branch.
 
 With TSM_solver installed (pip install ".[plot]" in the repository) this file runs from anywhere, also as a copy.
-Edit the parameters below and run (≈ 2–4 min on 16 cores):
+Edit the parameters below and run (≈ 15 s on 16 cores):
 
     python amplitude_scan.py
 
@@ -42,8 +46,8 @@ ETA_PERP = 3.0              # primary's perpendicular temperature-to-density rat
 PHI_MAX = 100 * PHI_P       # largest amplitude of the upward scan
 STEP_UP = 1.25              # Φ_P factor per step upward
 STEP_DOWN = 0.95            # Φ_P factor per step downward
-ISM_STOP = 0.01             # stop the downward scan after a root with min|D_ISM| below this
-CONFIRM_END = True          # guess-free search one step below the last root of the downward scan
+ISM_STOP = 0.03             # stop the downward scan after a root with min|D_ISM| below this (smaller: slower)
+CONFIRM_END = False         # guess-free search one step below the last root of the downward scan (≈ 2 min)
 TOL = 1e-8                  # tolerance of the field-line integral
 NTHREADS = min(os.cpu_count() or 1, 32)
 # -----------------------------------------------------------------------------------------------------------------
