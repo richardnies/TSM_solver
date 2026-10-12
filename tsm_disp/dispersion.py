@@ -298,7 +298,7 @@ def _mode_structure(self, omega, kx, quantity="potential", nz=129, ny=128, z=Non
     elif quantity == "pressure":
         f = P
     else:
-        vEx = -(A / kx)[:, None] * np.sin(y)[None, :]          # v_Ex^P = −Φ_P T_P(z) sin y
+        vEx = -(A / kx)[:, None] * np.sin(y)[None, :]          # v_Ex^P = −Φ_P Ftheta_P(z) sin y
         f = vEx * P
     if np.any(flags & 3) and self.warn:
         warnings.warn("mode_structure: velocity-integral flags %d" % np.bitwise_or.reduce(flags.ravel()), FlagWarning)

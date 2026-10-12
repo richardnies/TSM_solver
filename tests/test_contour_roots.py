@@ -2,7 +2,7 @@
 boundaries, bisection, moments, polish and verification.
 
 Synthetic functions with known zeros and poles (fast), then the dispersion solvers (slow): the λ-form CBC q = 20
-TSM at k_x = 0.5 (ω ≈ 0.5808 + 0.2927i, examples/output/tsm_kx_scan.txt) away from and next to the ISM region, and
+TSM at k_x = 0.5 (ω ≈ 0.5808 + 0.2927i, examples/tsm_kx_scan) away from and next to the ISM region, and
 the circular streaming solver with its pole-free F = 𝒟 Π_j det D(y_j)."""
 import numpy as np
 import pytest

@@ -48,7 +48,7 @@ class Geometry:
     def average(self, f, n=4097, points=()):
         """Field-line average ⟨f⟩ = ∫ weight f dz of a vectorised callable: Gauss–Legendre panels (32 nodes,
         about n nodes in total) on each interval between the geometry's breakpoints and the extra `points`
-        (e.g. the jumps of a primary's T_P). The nodes are interior, so f is never sampled at a jump."""
+        (e.g. the jumps of a primary's Ftheta_P). The nodes are interior, so f is never sampled at a jump."""
         x, w = np.polynomial.legendre.leggauss(32)
         cuts = sorted({float(p) for p in list(self.breakpoints()) + list(points) if self.zmin < p < self.zmax})
         edges = [self.zmin] + cuts + [self.zmax]

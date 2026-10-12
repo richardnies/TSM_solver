@@ -361,7 +361,7 @@ def default_validity(disp, kx):
     """Domain where the solver's 𝒟 is the analytic function being sought (None: everywhere).
 
     StreamingDispersion / BinormalDispersion: real velocity contour (cdepth = 0) → Im ω > 0 (discretisation poles
-    approach the real axis: keep Im ω ≳ 0.05); tanh-deformed contour (cdepth > 0) → Re ω > k_x Φ_P max T_P."""
+    approach the real axis: keep Im ω ≳ 0.05); tanh-deformed contour (cdepth > 0) → Re ω > k_x Φ_P max Ftheta_P."""
     grid = getattr(disp, "grid", None)
     if grid is None or not hasattr(grid, "params"):
         return None
@@ -1330,7 +1330,7 @@ def local_ism_roots(disp, kx, *, nz=33, ny=64, starts=None, gamma_min=1e-6, tol=
     """Local roots ω(z, y) of D_ISM(z, y, ω) = 0 (DispersionRelation) on an nz × ny grid of the surface: the ISM
     region, where 𝒟 is not analytic, is their union {ω : D_ISM(z, y, ω) = 0 for some real (z, y)}.
 
-    Muller from `starts` (default a fan scaled by A = k_x Φ_P max T_P) at every 8th y, continued in y in between.
+    Muller from `starts` (default a fan scaled by A = k_x Φ_P max Ftheta_P) at every 8th y, continued in y in between.
     Returns rows (z, y, Re ω, Im ω) with Im ω > gamma_min (≈ 5 s for 33 × 64 on one thread)."""
     d = _clone_with(disp, dict(warn=False))
     g = d.geometry

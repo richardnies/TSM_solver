@@ -72,12 +72,21 @@ def _maybe_vector(f):
     return _vectorise(f)
 
 
-def _disp(Phi_P, T_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_AR, disp_model,
+def _envelope(Ftheta_P, T_P):
+    """Primary envelope along the field line: Ftheta_P, or T_P, its name in the original code (kept for old drivers)."""
+    if Ftheta_P is None:
+        Ftheta_P = T_P
+    if Ftheta_P is None:
+        raise TypeError("the primary envelope Ftheta_P (old name T_P) is required")
+    return Ftheta_P
+
+
+def _disp(Phi_P, Ftheta_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_AR, disp_model,
           epsabs, epsrel, epsabs_y, epsrel_y, asymp_J11, a_int, Nintegrate, tol_adaptive, sing_ITG):
     if sing_ITG:
         _warn_once("sing", "sing_ITG is ignored by tsm_disp")
     geo = CircularAnalytic(eps=eps_AR, vMx=_maybe_vector(T_D))
-    pri = Primary(_maybe_vector(T_P), Phi_P)
+    pri = Primary(_maybe_vector(Ftheta_P), Phi_P)
     return DispersionRelation(geo, pri, tau=tau, eta_par=alpha_par, eta_prp=alpha_prp, delta_par=Delta_par,
                               delta_prp=Delta_prp, form=_form(disp_model), y_contour=Y_CONTOUR,
                               epsabs=max(epsabs, 1e-13), epsrel=max(epsrel, 1e-13),
@@ -85,16 +94,17 @@ def _disp(Phi_P, T_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_
                               nthreads=NTHREADS, asymp_J11=(asymp_J11 > 0), warn=False)
 
 
-def evaluate_disp_quasineutrality(omega=None, kr=None, Phi_P=None, T_P=None, T_D=None, alpha_par=0, alpha_prp=0,
+def evaluate_disp_quasineutrality(omega=None, kr=None, Phi_P=None, Ftheta_P=None, T_D=None, alpha_par=0, alpha_prp=0,
                                   Delta_par=0, Delta_prp=0, tau=1, epsrel_theta=1e-14, epsabs_theta=1e-14,
                                   epsrel_y=1e-12, epsabs_y=1e-12, theta_val=None, eps_AR=0.5 / 2.7778,
                                   disp_model=0.1, a_int=100, Nintegrate=10000, tol_adaptive=1e-12,
-                                  asymp_J11=-1, sing_ITG=False, omegaN=None):
-    """D(ω) of the circular model (old API). With theta_val: −w(θ)·⟨(D−1)/D⟩_y/(2π) as before,
-    where w = 1 + ε cos θ."""
+                                  asymp_J11=-1, sing_ITG=False, omegaN=None, T_P=None):
+    """D(ω) of the circular model (old API; the primary envelope Ftheta_P is also accepted as T_P). With theta_val:
+    −w(θ)·⟨(D−1)/D⟩_y/(2π) as before, where w = 1 + ε cos θ."""
     if omega is None:
         omega = omegaN
-    d = _disp(Phi_P, T_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_AR, disp_model,
+    Ftheta_P = _envelope(Ftheta_P, T_P)
+    d = _disp(Phi_P, Ftheta_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_AR, disp_model,
               epsabs_theta, epsrel_theta, epsabs_y, epsrel_y, asymp_J11, a_int, Nintegrate, tol_adaptive, sing_ITG)
     if theta_val is None:
         return d.D(complex(omega), kr)
@@ -105,21 +115,23 @@ def evaluate_disp_quasineutrality(omega=None, kr=None, Phi_P=None, T_P=None, T_D
     return -v[0] * (1 + eps_AR * np.cos(th)) / (2 * np.pi)
 
 
-def evaluate_integrand_ITG(theta_val, y_val, omega, kr, Phi_P, T_P, T_D, alpha_par=0, alpha_prp=0, Delta_par=0,
-                           Delta_prp=0, tau=1, disp_model=0.1, eps_AR=0.5 / 2.7778, a_int=100, Nintegrate=10000,
-                           tol_adaptive=1e-12, asymp_J11=-1):
-    """D_ISM(θ, y) (old name D_ITG)."""
-    d = _disp(Phi_P, T_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_AR, disp_model,
+def evaluate_integrand_ITG(theta_val, y_val, omega, kr, Phi_P, Ftheta_P=None, T_D=None, alpha_par=0, alpha_prp=0,
+                           Delta_par=0, Delta_prp=0, tau=1, disp_model=0.1, eps_AR=0.5 / 2.7778, a_int=100,
+                           Nintegrate=10000, tol_adaptive=1e-12, asymp_J11=-1, T_P=None):
+    """D_ISM(θ, y) (old name D_ITG; Ftheta_P is also accepted as T_P)."""
+    Ftheta_P = _envelope(Ftheta_P, T_P)
+    d = _disp(Phi_P, Ftheta_P, T_D, alpha_par, alpha_prp, Delta_par, Delta_prp, tau, eps_AR, disp_model,
               1e-10, 1e-10, 1e-10, 1e-10, asymp_J11, a_int, Nintegrate, tol_adaptive, False)
     if np.imag(theta_val) != 0:
         raise NotImplementedError("complex theta_val is not supported by tsm_disp")
     return d.D_ism(complex(omega), kr, float(np.real(theta_val)), complex(y_val))
 
 
-def evaluate_integrand_QN(theta_val, y_val, omega, kr, Phi_P, T_P, T_D, alpha_par=0, alpha_prp=0, Delta_par=0,
-                          Delta_prp=0, tau=1, disp_model=0.1, eps_AR=0.5 / 2.7778, a_int=0.5, Nintegrate=10000,
-                          tol_adaptive=1e-4, asymp_J11=-1):
-    return 1. - 1. / evaluate_integrand_ITG(theta_val, y_val, omega, kr, Phi_P, T_P, T_D, alpha_par, alpha_prp,
+def evaluate_integrand_QN(theta_val, y_val, omega, kr, Phi_P, Ftheta_P=None, T_D=None, alpha_par=0, alpha_prp=0,
+                          Delta_par=0, Delta_prp=0, tau=1, disp_model=0.1, eps_AR=0.5 / 2.7778, a_int=0.5,
+                          Nintegrate=10000, tol_adaptive=1e-4, asymp_J11=-1, T_P=None):
+    Ftheta_P = _envelope(Ftheta_P, T_P)
+    return 1. - 1. / evaluate_integrand_ITG(theta_val, y_val, omega, kr, Phi_P, Ftheta_P, T_D, alpha_par, alpha_prp,
                                             Delta_par, Delta_prp, tau, disp_model, eps_AR, a_int, Nintegrate,
                                             tol_adaptive, asymp_J11)
 

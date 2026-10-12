@@ -1,4 +1,4 @@
-"""Analytic θ-geometry (AnalyticGeometry). The top-hat primary case is examples/top_hat_primary.py."""
+"""Analytic θ-geometry (AnalyticGeometry). The top-hat primary case is examples/top_hat_primary/."""
 import numpy as np
 import pytest
 from tsm_disp.dispersion import DispersionRelation

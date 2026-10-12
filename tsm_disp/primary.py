@@ -1,4 +1,4 @@
-"""The frozen primary streamer: v_Ex(z, y) = −Φ_P T_P(z) sin y  (ρ_ref v_th/a; the sign is the
+"""The frozen primary streamer: v_Ex(z, y) = −Φ_P Ftheta_P(z) sin y  (ρ_ref v_th/a; the sign is the
 convention of the original code, irrelevant after the y average).
 
 Amplitude conventions are documented in README.md §Amplitude; `stella_phiP` converts a stella
@@ -20,33 +20,33 @@ def legacy_gaussian_norm(width=np.pi, center=0.0):
 
 
 class Primary:
-    """Primary envelope T_P(z) (vectorised callable, real) and amplitude Φ_P."""
+    """Primary envelope Ftheta_P(z) (vectorised callable, real) and amplitude Φ_P."""
 
-    def __init__(self, T_P, Phi_P, name="callable", breakpoints=()):
-        """T_P: vectorised callable of the field-line angle (any analytic θ-variation); breakpoints: angles
-        where T_P is discontinuous or sharp, used as panel edges of the θ quadrature."""
-        self.T_P = T_P
+    def __init__(self, Ftheta_P, Phi_P, name="callable", breakpoints=()):
+        """Ftheta_P: vectorised callable of the field-line angle (any analytic θ-variation); breakpoints: angles
+        where Ftheta_P is discontinuous or sharp, used as panel edges of the θ quadrature."""
+        self.Ftheta_P = Ftheta_P
         self.Phi_P = float(Phi_P)
         self.name = name
         self.breakpoints = [float(p) for p in breakpoints]
 
     def __call__(self, z):
-        v = self.T_P(z)
+        v = self.Ftheta_P(z)
         return np.broadcast_to(v, np.shape(z)).astype(float) if np.ndim(z) else float(v)
 
     def amplitude(self, z):
-        """Φ_P T_P(z): local amplitude of v_Ex."""
+        """Φ_P Ftheta_P(z): local amplitude of v_Ex."""
         return self.Phi_P * self(z)
 
     def with_amplitude(self, Phi_P):
-        """Copy of this primary (same T_P) with amplitude Φ_P."""
+        """Copy of this primary (same Ftheta_P) with amplitude Φ_P."""
         import copy
         p = copy.copy(self)
         p.Phi_P = float(Phi_P)
         return p
 
     def with_heat_flux(self, Q, geometry, ky_P, eta_par=0.0, eta_prp=0.0, delta_par=0.0, delta_prp=0.0, **kw):
-        """Copy of this primary (same T_P) whose amplitude Φ_P gives the field-line-averaged ion heat flux Q
+        """Copy of this primary (same Ftheta_P) whose amplitude Φ_P gives the field-line-averaged ion heat flux Q
         of stella's diagnostic (gyro-Bohm units, see heat_flux_stella; keyword arguments are passed on).
         The phases Δ must give a heat flux of the sign of Q (it vanishes for Δ∥ = Δ⊥ = 0)."""
         q1 = heat_flux_stella(self.with_amplitude(1.0), geometry, ky_P, eta_par, eta_prp, delta_par, delta_prp, **kw)
@@ -60,24 +60,24 @@ class Primary:
         return cls(lambda z: 1.0, Phi_P, name="constant")
 
     @classmethod
-    def top_hat(cls, theta_P, Delta_P, Phi_P):
-        """T_P = 1 for θ ∈ [θ^P − Δ^P/2, θ^P + Δ^P/2] (taken modulo 2π), 0 otherwise; 0 < Δ^P ≤ 2π.
-        The two edges are breakpoints of the θ quadrature."""
-        if not 0 < Delta_P <= 2 * np.pi:
-            raise ValueError("Delta_P must be in (0, 2π]")
-        th0, half = float(theta_P), 0.5 * float(Delta_P)
+    def top_hat(cls, center_tophat, width_tophat, Phi_P):
+        """Ftheta_P = 1 for θ ∈ [θ_TH − w_TH/2, θ_TH + w_TH/2] (taken modulo 2π), 0 otherwise; centre θ_TH =
+        center_tophat, width w_TH = width_tophat, 0 < w_TH ≤ 2π. The two edges are breakpoints of the θ quadrature."""
+        if not 0 < width_tophat <= 2 * np.pi:
+            raise ValueError("width_tophat must be in (0, 2π]")
+        th0, half = float(center_tophat), 0.5 * float(width_tophat)
 
-        def T(z):
-            d = np.mod(np.asarray(z, float) - th0 + np.pi, 2 * np.pi) - np.pi      # θ − θ^P wrapped to [−π, π)
-            return (np.abs(d) <= half).astype(float) if Delta_P < 2 * np.pi else np.ones(np.shape(z))
-        edges = [] if Delta_P >= 2 * np.pi else [np.mod(th0 + s * half + np.pi, 2 * np.pi) - np.pi for s in (-1, 1)]
-        self = cls(T, Phi_P, name="top hat θP=%.3g ΔP=%.3g" % (th0, Delta_P), breakpoints=edges)
-        self.theta_P, self.Delta_P = th0, float(Delta_P)
+        def F(z):
+            d = np.mod(np.asarray(z, float) - th0 + np.pi, 2 * np.pi) - np.pi      # θ − θ_TH wrapped to [−π, π)
+            return (np.abs(d) <= half).astype(float) if width_tophat < 2 * np.pi else np.ones(np.shape(z))
+        edges = [] if width_tophat >= 2 * np.pi else [np.mod(th0 + s * half + np.pi, 2 * np.pi) - np.pi for s in (-1, 1)]
+        self = cls(F, Phi_P, name="top hat θ_TH=%.3g w_TH=%.3g" % (th0, width_tophat), breakpoints=edges)
+        self.center_tophat, self.width_tophat = th0, float(width_tophat)
         return self
 
     @classmethod
     def gaussian(cls, Phi_P, width=np.pi, center=0.0, normalise="legacy"):
-        """T_P = exp(−((z−center)/width)²)/norm with norm = 'legacy' (old drivers' fac_norm),
+        """Ftheta_P = exp(−((z−center)/width)²)/norm with norm = 'legacy' (old drivers' fac_norm),
         'rms' (exact RMS over uniform z on [−π, π]) or 'peak' (1)."""
         if normalise == "legacy":
             norm = legacy_gaussian_norm(width, center)
@@ -96,16 +96,16 @@ class Primary:
         return self
 
     @classmethod
-    def tabulated(cls, z, TP, Phi_P, periodic=True):
+    def tabulated(cls, z, Ftheta_P, Phi_P, periodic=True):
         from .geometry.base import _Fourier
         from scipy.interpolate import CubicSpline
         z = np.asarray(z, float)
-        TP = np.asarray(TP, float)
+        Ftheta_P = np.asarray(Ftheta_P, float)
         uniform = np.allclose(np.diff(z), (z[-1] - z[0]) / (len(z) - 1))
         if periodic and uniform:
-            f = _Fourier(z[0], z[-1] - z[0], TP[:-1])
+            f = _Fourier(z[0], z[-1] - z[0], Ftheta_P[:-1])
         else:
-            f = CubicSpline(z, TP, bc_type="periodic" if periodic else "not-a-knot")
+            f = CubicSpline(z, Ftheta_P, bc_type="periodic" if periodic else "not-a-knot")
         return cls(f, Phi_P, name="tabulated")
 
 
@@ -119,7 +119,7 @@ def stella_phiP(phiinit, y0, exb_nonlin_fac, fac_norm=1.0, den0=1.0, tite=1.0, b
     The real-space potential is 2|φ̂| cos(k_y y), and stella's radial E×B velocity is
     exb_nonlin_fac · ∂_y φ (exb_nonlin_fac contains the ½ of v_th² = 2T/m). Hence
 
-        Φ_P T_P(z) = 2 exb_nonlin_fac k_y^P |φ̂(z)|,   T_P = φ0/fac_norm.
+        Φ_P Ftheta_P(z) = 2 exb_nonlin_fac k_y^P |φ̂(z)|,   Ftheta_P = φ0/fac_norm.
 
     The historical drivers set Φ_P = k_y^P · phiinit · fac_norm, i.e. without 2·exb_nonlin_fac
     (= 1/√(1−ε²) = 1.0166 for the CBC surface at ε = 0.18).
@@ -135,14 +135,14 @@ def A_P(primary, geometry, rmaj=None):
     """Paper eq. (21): A^P = √⟨(v_Ex R/(v_T ρ))²⟩_ψ, with ⟨·⟩_ψ over the field line and the primary
     phase y (⟨sin² y⟩ = ½), R = rmaj (units of a) and ρ = ρ_ref (B = B_ref):
 
-        A^P = (R/a) Φ_P √(⟨T_P²⟩/2).
+        A^P = (R/a) Φ_P √(⟨Ftheta_P²⟩/2).
 
     Note: the plot labels of the historical drivers are A_label = Φ_P/0.3557 with Φ_P the uncorrected
     stella amplitude; for the CBC Gaussian primary A_label ≈ 1.37 × A^P(21) (README §Amplitude).
     """
     R = rmaj if rmaj is not None else geometry.rmaj
-    TP2 = geometry.average(lambda z: primary(z)**2, points=getattr(primary, "breakpoints", []))
-    return R * primary.Phi_P * np.sqrt(TP2 / 2.0)
+    Ftheta_P2 = geometry.average(lambda z: primary(z)**2, points=getattr(primary, "breakpoints", []))
+    return R * primary.Phi_P * np.sqrt(Ftheta_P2 / 2.0)
 
 
 def heat_flux_stella(primary, geometry, ky_P, eta_par=0.0, eta_prp=0.0, delta_par=0.0, delta_prp=0.0, *,
@@ -156,9 +156,9 @@ def heat_flux_stella(primary, geometry, ky_P, eta_par=0.0, eta_prp=0.0, delta_pa
     For the primary of a `secondary = .true.` run, g = phiinit φ0(z)[den0 e^{i den0_phase} + tpar0(v∥² − ½)
     + tperp0(v⊥² − 1)]F_M and φ = phiinit φ0 den0 e^{i den0_phase} (k_y^P ρ → 0, T_e = T_i). With the
     Maxwellian moments ∫(v∥²+v⊥²)(v∥²−½)F_M = ½ and ∫(v∥²+v⊥²)(v⊥²−1)F_M = 1, the solver's amplitude
-    Φ_P T_P = 2 f_exb k_y^P |φ| (stella_phiP), η = t0/den0 and phases Δ∥ = Δ⊥ = −den0_phase, this is
+    Φ_P Ftheta_P = 2 f_exb k_y^P |φ| (stella_phiP), η = t0/den0 and phases Δ∥ = Δ⊥ = −den0_phase, this is
 
-        Q = −s_ψ (½ η∥ sin Δ∥ + η⊥ sin Δ⊥) Φ_P² ⟨T_P²⟩ / (4 f_exb² k_y^P ⟨|∇ρ|⟩),
+        Q = −s_ψ (½ η∥ sin Δ∥ + η⊥ sin Δ⊥) Φ_P² ⟨Ftheta_P²⟩ / (4 f_exb² k_y^P ⟨|∇ρ|⟩),
 
     with ⟨·⟩ the field-line average (geometry.average, stella's jacob weight), s_ψ = sign_torflux (−1 for
     Miller), f_exb = exb_nonlin_fac and ⟨|∇ρ|⟩ → 1 if flux_norm is False. Checked against stella runs in
@@ -174,11 +174,11 @@ def heat_flux_stella(primary, geometry, ky_P, eta_par=0.0, eta_prp=0.0, delta_pa
     if s is None:
         raise ValueError("sign_torflux is not known for this geometry; pass sign_torflux=")
     pts = getattr(primary, "breakpoints", [])
-    TP2 = geometry.average(lambda z: primary(z)**2, points=pts)
+    Ftheta_P2 = geometry.average(lambda z: primary(z)**2, points=pts)
     if flux_norm:
         gr = grho if grho is not None else geometry.grho
         norm = geometry.average(lambda z: gr(z))
     else:
         norm = 1.0
     drive = 0.5 * eta_par * np.sin(delta_par) + eta_prp * np.sin(delta_prp)
-    return -s * drive * primary.Phi_P**2 * TP2 / (4.0 * f**2 * ky_P * norm)
+    return -s * drive * primary.Phi_P**2 * Ftheta_P2 / (4.0 * f**2 * ky_P * norm)

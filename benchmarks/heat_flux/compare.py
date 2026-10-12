@@ -3,7 +3,7 @@
 
 The solver primary is built from the deck exactly as for the secondary benchmark: Miller geometry from
 &millergeo_parameters (equal-arc z), Φ_P from stella_phiP(phiinit, y0, exb_nonlin_fac, legacy fac_norm),
-T_P = Gaussian of width width0, η = tpar0, tperp0, Δ∥ = Δ⊥ = −den0_phase, k_y^P = 1/y0.
+Ftheta_P = Gaussian of width width0, η = tpar0, tperp0, Δ∥ = Δ⊥ = −den0_phase, k_y^P = 1/y0.
 Usage: python compare.py  (after make_decks.py and run_decks.sh)
 """
 import glob

@@ -7,11 +7,6 @@ geometry*, Plasma Phys. Control. Fusion **68** (2026) 045028. Given a frozen str
 (Miller, VMEC, or the geometry of a stella run), it finds the complex frequency $`\omega`$ of the zonal
 secondary mode at radial wavenumber $`k_x`$. The Python package is called `tsm_disp`.
 
-![TSM frequency and growth rate against k_x, solver vs stella](examples/tsm_kx_scan.png)
-
-*The example below: circular Cyclone Base Case surface ($`q = 20`$), $`\eta_\parallel = \eta_\perp = 3`$,
-Gaussian primary; lines from this solver, crosses from stella gyrokinetic simulations of the same case.*
-
 ## Installation
 
 Requirements: Python ≥ 3.8 and a C compiler (gcc, clang or Intel); tested with Python 3.8 (numpy 1.24,
@@ -23,24 +18,45 @@ cd TSM_solver
 pip install ".[plot]"          # or: pip install -e ".[plot,test]" to develop and run the tests
 ```
 
-Optional extras: `stella` (f90nml, netCDF4: read stella runs and decks), `vmec` (simsopt: VMEC
-equilibria), `plot` (matplotlib, for the examples), `test` (pytest, mpmath). The build uses OpenMP when
+This installs two packages: `tsm_disp`, the solver, and `evaluation_scripts`, the functions the examples call
+(continuation, data files, figures). Optional extras: `stella` (f90nml, netCDF4: read stella runs and decks), `vmec`
+(simsopt: VMEC equilibria), `plot` (matplotlib, for the examples), `test` (pytest, mpmath). The build uses OpenMP when
 the compiler supports `-fopenmp` and prints `building with OpenMP`; otherwise it runs single-threaded
 (the message `clang: error: unsupported option '-fopenmp'` from Apple clang is this check and harmless; for
 OpenMP on macOS install `libomp` or build with a gcc, e.g. `CC=gcc-14 pip install ...`). Without installing,
 `python setup.py build_ext --inplace` builds the extension inside the source tree; it needs Cython ≥ 3 in the
-environment (`pip install "cython>=3"`).
+environment (`pip install "cython>=3"`), and the examples then need the repository on the path, e.g.
+`PYTHONPATH=/path/to/TSM_solver python tsm_kx_scan.py` (an editable install is cleaner: it exposes only the two
+packages, not the repository's other modules such as the compatibility shim `disp_rel.py`).
 
 ## Quickstart
 
 ```bash
-python examples/tsm_kx_scan.py              # ~20 s on 32 cores, ~30 s on 8, a few minutes on 1
+python examples/tsm_kx_scan/tsm_kx_scan.py      # ~20 s on 32 cores, ~30 s on 8, a few minutes on 1
 ```
 
-It follows the most unstable TSM from $`k_x\rho_i = 0.5`$ up to 0.8 and down to 0.1 and writes
-`examples/output/tsm_kx_scan.txt` ($`k_x`$, $`\omega_r`$, $`\gamma`$) and the figure above. Options:
-`--Phi-P` (primary amplitude), `--q`, `--kx-min/--kx-max/--dkx`, `--guess` (initial ω at `--kx-start`),
-`--nthreads`, `--tol`; see `--help`.
+For the circular Cyclone Base Case surface ($`q = 20`$), $`\eta_\parallel = \eta_\perp = 3`$ and a Gaussian primary it follows
+the most unstable TSM from $`k_x\rho_i = 0.5`$ up to 0.8 and down to 0.1 and writes, next to the script,
+`tsm_kx_scan.txt` ($`k_x`$, $`\omega_r`$, $`\gamma`$) and `tsm_kx_scan.pdf` ($`\omega_r`$, $`\gamma`$ against $`k_x`$, with stella
+gyrokinetic simulations of the same case). A copy of the script in any other directory runs the same way and writes
+next to the copy.
+
+**Examples.** Each example is a directory `examples/<name>/` holding one script, `<name>.py`, with its parameters
+(amplitude, $`\tau`$ = `TAU`, $`\eta_\parallel`$ = `ETA_PAR`, $`\eta_\perp`$ = `ETA_PERP`, $`q`$, $`k_x`$ range, initial guess, solver,
+threads, …) set at the top; edit them and run the script. The scripts need only the installed package
+(`pip install ".[plot]"`, or `pip install -e ".[plot]"` to edit the package as well), so each can be copied anywhere,
+e.g. one copy per case, and run from any directory; its figures (PDF) and data are written next to the script, i.e.
+next to the copy. The scripts build the geometry, primary and dispersion relation with `tsm_disp` and call the
+functions in `evaluation_scripts` (root continuation in $`k_x`$, data files, figures; installed with `tsm_disp`), which
+can be reused in your own scripts:
+
+| example | what it does |
+|---|---|
+| `tsm_kx_scan` | TSM ω(k_x) on the CBC; λ form or, with `SOLVER = "streaming"`, ion parallel streaming; amplitude from Φ_P or from the primary heat flux |
+| `mode_structure` | potential, pressure and nonlinear heat flux of the TSM on the flux surface |
+| `amplitude_scan` | TSM at fixed $`k_x`$ as $`\Phi_P`$ is scanned: up to the RDK limit (paper eq. 51; exact drift-free root), down into the ISM region |
+| `top_hat_primary` | TSM ω(k_x) for an analytic geometry ($`v_{Mx} = \sin\theta`$) and a top-hat primary |
+| `find_all_roots` | all roots in a box of the complex ω plane without an initial guess, with a map of the ISM region |
 
 The core of the example in a few lines:
 
@@ -63,7 +79,7 @@ print(root.omega)            # ≈ 0.5808 + 0.2927j  (units v_th/a, v_th = √(2
 `"pressure"` ($`\hat P = T\int d^3v\,(v_\parallel^2+v_\perp^2/2)/v_{th}^2\,\hat g`$, paper eq. 38) or `"heat_flux"`
 ($`\hat Q_{NL} = v_{Ex}^P \hat P`$, eq. 40, whose $`y`$ average carries the up–down asymmetry that drives the TSM),
 normalised to $`Ze\langle\phi\rangle_\psi/T = 1`$; `phi_average` = 1 checks that ω is a root.
-`python examples/mode_structure.py` plots all three for the example case.
+`examples/mode_structure/mode_structure.py` plots all three for the example case.
 
 **Finding a first root.** Roots are followed by continuation, so a scan needs one good initial guess. Good
 guesses: for the TSM, $`\omega_r \approx 2k_x\rho_i v_{th}/R`$ with $`\gamma`$ a fraction of it; for the GAM
@@ -74,8 +90,9 @@ region, where $`D`$ is not analytic).
 
 ## Equations
 
-The secondary (zonal, wavenumber $`k_x`$) of a frozen streamer primary $`v_{Ex}(z,y) = -\Phi_P T_P(z)\sin y`$
-obeys (paper eqs. 31–32)
+The secondary (zonal, wavenumber $`k_x`$) of a frozen streamer primary $`v_{Ex}(z,y) = -\Phi_P F_{\theta,P}(z)\sin y`$
+(amplitude $`\Phi_P`$ and envelope along the field line $`F_{\theta,P}`$, `Ftheta_P` in the code; called $`T_P`$ before
+2026-10-12, renamed to avoid confusion with a temperature) obeys (paper eqs. 31–32)
 
 ```math
 D(\omega,k_x) = 1-\Big\langle \frac{1}{D_{\rm ISM}}\Big\rangle = \int dz\, w(z)\,\frac{1}{2\pi}\int_{-\pi}^{\pi}dy\,\frac{D_{\rm ISM}-1}{D_{\rm ISM}} = 0,
@@ -142,21 +159,18 @@ image of the old `T_D = sin θ/2.7778`; the two are equivalent for up-down-symme
 Tokamak tubes with `nperiod = 1` are periodic (Fourier interpolation); VMEC tubes are not (field-line average).
 
 **Analytic θ-variation.** Geometry and primary can both be given as functions of θ:
-`AnalyticGeometry(vMx, gradx, B, jacobian)` and `Primary(T_P, Phi_P, breakpoints=[...])`, with `T_P` a
+`AnalyticGeometry(vMx, gradx, B, jacobian)` and `Primary(Ftheta_P, Phi_P, breakpoints=[...])`, with `Ftheta_P` a
 vectorised callable of θ; list discontinuities or sharp features in `breakpoints` (they become panel edges of
-the θ integral). `Primary.top_hat(theta_P, Delta_P, Phi_P)` is 1 for $`|\theta-\theta^P| \le \Delta^P/2`$
-(modulo 2π) and 0 otherwise. `python examples/top_hat_primary.py` (≈ 20 s on 32 cores) follows the TSM in
-$`k_x`$ for $`v_{Mx} = \sin\theta`$, $`|\nabla x| = 1`$ and a top-hat primary ($`\theta^P = 0`$, $`\Delta^P = \pi`$,
-$`\Phi_P = 3`$ by default; `--theta-P`, `--Delta-P`, `--Phi-P`, `--guess` to change them, or `--Q`, `--ky-P`,
-`--delta` to set the amplitude by the primary heat flux, e.g. `--Q 9708 --ky-P 0.001 --delta 0.5` for $`\Phi_P = 3`$)
-until the root reaches the ISM region:
-
-![TSM for v_Mx = sin θ, |∇x| = 1 and a top-hat primary](examples/top_hat_primary.png)
+the θ integral). `Primary.top_hat(center_tophat, width_tophat, Phi_P)` is 1 for $`|\theta-\theta_{\rm TH}| \le w_{\rm TH}/2`$
+(modulo 2π) and 0 otherwise. `examples/top_hat_primary/top_hat_primary.py` (≈ 20 s on 32 cores) follows the TSM
+in $`k_x`$ for $`v_{Mx} = \sin\theta`$, $`|\nabla x| = 1`$ and a top-hat primary ($`\theta_{\rm TH} = 0`$, $`w_{\rm TH} = \pi`$,
+$`\Phi_P = 3`$ by default; parameters `CENTER_TOPHAT`, `WIDTH_TOPHAT`, `PHI_P`, `GUESS`, or `HEAT_FLUX`, `KY_P`, `DELTA` to set the
+amplitude by the primary heat flux, e.g. 9708, 0.001, 0.5 for $`\Phi_P = 3`$) until the root reaches the ISM region.
 
 ```python
 from tsm_disp.geometry import AnalyticGeometry
 geo = AnalyticGeometry(vMx=np.sin, gradx=1.0)                    # B = 1, weight ∝ 1/B (b·∇θ uniform)
-pri = Primary.top_hat(theta_P=0.0, Delta_P=np.pi, Phi_P=3.0)
+pri = Primary.top_hat(center_tophat=0.0, width_tophat=np.pi, Phi_P=3.0)
 disp = DispersionRelation(geo, pri, tau=1, eta_par=3, eta_prp=3, nthreads=8)
 disp.find_root(1.05 + 0.66j, 0.3).omega                         # 1.0535 + 0.6621i
 ```
@@ -173,7 +187,7 @@ whose potential has real-space amplitude $`2|\hat\phi|`$ and radial E×B velocit
 $`f_{\rm exb}`$ = `exb_nonlin_fac` (the ½ of $`v_{th}^2=2T/m`$ is inside it). Hence
 
 ```math
-\Phi_P\,T_P(z) = 2 f_{\rm exb}\,k_y^P\,|\hat\phi(z)|,\qquad \eta_\parallel = \mathrm{tpar0},\quad \eta_\perp = \mathrm{tperp0}
+\Phi_P\,F_{\theta,P}(z) = 2 f_{\rm exb}\,k_y^P\,|\hat\phi(z)|,\qquad \eta_\parallel = \mathrm{tpar0},\quad \eta_\perp = \mathrm{tperp0}
 ```
 
 (`primary.stella_phiP`). For the CBC surface $`2 f_{\rm exb} = 1/\sqrt{1-\epsilon^2} = 1.0166`$.
@@ -188,7 +202,7 @@ The paper's eq. (21),
 A^P = \sqrt{\big\langle (v_{Ex} R / v_{Ti}\rho_i)^2 \big\rangle_\psi}\quad\text{(average over $z$ and $y$)},
 ```
 
-is `primary.A_P`. For the Gaussian CBC primary $`A^P = (R/a)\,\Phi_P\sqrt{\langle T_P^2\rangle/2} = 2.024\,\Phi_P`$,
+is `primary.A_P`. For the Gaussian CBC primary $`A^P = (R/a)\,\Phi_P\sqrt{\langle F_{\theta,P}^2\rangle/2} = 2.024\,\Phi_P`$,
 so a legacy label $`\mathcal A`$ corresponds to $`A^P = 0.732\,\mathcal A`$. The labels follow a different
 convention from eq. (21), and the paper's quoted values should be checked against it.
 
@@ -203,7 +217,7 @@ weighted with the Jacobian and divided by $`\langle|\nabla\rho|\rangle`$) gives,
 
 ```math
 Q = -s_\psi\,\Big(\tfrac12\eta_\parallel\sin\Delta_\parallel + \eta_\perp\sin\Delta_\perp\Big)\,
-\frac{\Phi_P^2\,\langle T_P^2\rangle}{4 f_{\rm exb}^2\,k_y^P\,\langle|\nabla\rho|\rangle},
+\frac{\Phi_P^2\,\langle F_{\theta,P}^2\rangle}{4 f_{\rm exb}^2\,k_y^P\,\langle|\nabla\rho|\rangle},
 ```
 
 with $`s_\psi`$ = `sign_torflux` (−1 for Miller), $`f_{\rm exb}`$ = `exb_nonlin_fac` and $`\langle\cdot\rangle`$ the
@@ -217,7 +231,7 @@ disp = DispersionRelation(geo, pri, eta_par=3, eta_prp=3, delta_par=0.5, delta_p
 heat_flux_stella(pri, geo, 1e-3, 3, 3, 0.5, 0.5)                                         # → 1159
 ```
 
-`python examples/tsm_kx_scan.py --Q 1159 --ky-P 0.001 --delta 0.5` does the $`k_x`$ scan this way.
+`examples/tsm_kx_scan/tsm_kx_scan.py` with `HEAT_FLUX = 1159`, `KY_P = 0.001`, `DELTA = 0.5` does the $`k_x`$ scan this way.
 Checked against 3-step stella runs of the frozen primary (`benchmarks/heat_flux/`, CBC and shaped Miller,
 $`\Delta = \pm`$, $`\eta_\parallel = 0`$ or $`\eta_\perp`$ = 0, $`k_y^P`$ = 0.001 and 0.005): agreement to
 1.0–1.1e-4 (stella's 5 printed digits) with `vperp_max = 4.5`. With stella's default `vperp_max = 3` its
@@ -238,7 +252,7 @@ $`h = \sum_m h_m e^{imz}`$. At each primary phase $`y`$ and velocity, the gyroce
 ```
 
 with every $`z`$-dependent coefficient ($`v_{Mx}`$, $`\hat{\boldsymbol b}\cdot\nabla z`$, $`J_0`$ and $`\Gamma_0`$ through $`b(z)`$,
-$`T_P`$, the weight) a Toeplitz matrix in $`m`$. Quasineutrality truncated to $`|m|\le M`$ ($`h`$) and $`|m|\le M_\varphi`$ ($`\varphi`$) gives
+$`F_{\theta,P}`$, the weight) a Toeplitz matrix in $`m`$. Quasineutrality truncated to $`|m|\le M`$ ($`h`$) and $`|m|\le M_\varphi`$ ($`\varphi`$) gives
 
 ```math
 \mathcal D(\omega) = 1 - \tau\big\langle c^{\rm T} \mathsf D(y)^{-1} e_0 \big\rangle_y,\qquad
@@ -315,7 +329,7 @@ coupling). The reference study applies the source operator after the inverse, $`
 this changes $`\mathsf D`$ but not $`\mathcal D`$ in its circular model (checked to $`10^{-16}`$) and $`\mathcal D`$ by
 ~$`10^{-4}`$ relative in $`z`$-dependent geometry; the order here follows from the equation for $`h`$.
 
-**Amplitude.** Amplitudes are always the physical E×B velocity $`\Phi_P T_P(z)`$ of `Primary`. The reference study
+**Amplitude.** Amplitudes are always the physical E×B velocity $`\Phi_P F_{\theta,P}(z)`$ of `Primary`. The reference study
 reads NP25 eq. (21) as a peak rather than an RMS and reports that the RMS reading overshoots NP25 Fig. 3(a) by
 30–40 % in growth rate (its appendix H); this is its claim about the paper's figure labels, not tested here.
 
@@ -345,9 +359,9 @@ Following the streaming study (report §7):
 
 With the streaming solvers keep the velocity contour (`VelocityGrid(cdepth, alpha)`) fixed along a track; switching it
 on mid-track makes trackers hop branches. The deformed contour ($`v_\parallel = t - ic\tanh(t/w)`$: below the axis for
-$`v_\parallel > 0`$, above it for $`v_\parallel < 0`$) is a valid continuation only for $`\omega_r > k_x\Phi_P\max T_P`$ (every
+$`v_\parallel > 0`$, above it for $`v_\parallel < 0`$) is a valid continuation only for $`\omega_r > k_x\Phi_P\max F_{\theta,P}`$ (every
 streaming resonance $`\omega - \omega_E = m v_\parallel\hat{\boldsymbol b}\cdot\nabla z`$ on the side where the contour dips). Below that it is
-wrong even at $`\gamma > 0`$: at $`q`$ = 2.8, $`k_x\rho_i`$ = 0.08 ($`k_x\Phi_P\max T_P`$ = 0.028) it agrees with the real contour to
+wrong even at $`\gamma > 0`$: at $`q`$ = 2.8, $`k_x\rho_i`$ = 0.08 ($`k_x\Phi_P\max F_{\theta,P}`$ = 0.028) it agrees with the real contour to
 $`10^{-4}`$ at $`\omega`$ = 0.1 + 0.05i and 0.3 + 0.05i, but gives 0.055 + 0.015i against 0.048 at $`\omega`$ = 0.05i. Use the real
 contour (`VelocityGrid()` default, $`\gamma > 0`$ only) for purely growing and slow modes.
 
@@ -388,7 +402,7 @@ so such evaluations stop with flag 16 after 1–6 s (60 s at the default setting
 flagged samples, or without zeros but with $`s_k \ne 0`$, are bisected down to `max_depth_suspect` = 6 and reported in
 `res.suspect_regions`; polishes restart from their smallest unflagged $`|\mathcal D|`$ and are abandoned when they meet a
 flagged evaluation. `local_ism_roots(disp, kx)` maps the region by the local roots $`\omega(z, y)`$ of $`D_{\rm ISM} = 0`$
-(`python examples/find_all_roots.py [--eta 1.5]` plots both).
+(`examples/find_all_roots/find_all_roots.py` plots both; set `ETA_PAR = ETA_PERP = 1.5` there for the weaker drive).
 
 **Poles.** `StreamingDispersion` has poles where $`\det\mathsf D(y_j) = 0`$ at a node of its $`y`$ rule, and zeros between
 them (the discretised continuum). By default ($`N = Z - P`$) zero–pole pairs show up in $`s_{1,2,3}`$ and are bisected;
@@ -396,9 +410,9 @@ them (the discretised continuum). By default ($`N = Z - P`$) zero–pole pairs s
 `BinormalDispersion`: $`F = \mathcal D\det\mathsf D`$) to count zeros and poles separately, at 2× the samples or far more
 next to the poles. `confirm=<the solver with more y nodes>` re-polishes every root and rejects the ones that move.
 For the real velocity contour keep $`\gamma \gtrsim 0.05`$ (`default_validity` enforces $`\gamma > 0`$; for the tanh
-contour $`\omega_r > k_x\Phi_P\max T_P`$).
+contour $`\omega_r > k_x\Phi_P\max F_{\theta,P}`$).
 
-Results (CBC $`q = 20`$, $`\Phi_P = 0.723`$, $`k_x\rho_i = 0.5`$, 8 threads; `examples/find_all_roots.py`):
+Results (CBC $`q = 20`$, $`\Phi_P = 0.723`$, $`k_x\rho_i = 0.5`$, 8 threads; `examples/find_all_roots/`):
 
 | solver, $`\eta`$ | box ($`\omega_r \times \gamma`$) | roots | suspect cells | evaluations | time |
 |---|---|---|---|---|---|
@@ -522,4 +536,4 @@ Results agree with the previous code to ≤ 1e-11 (stella-benchmark roots: 4e-11
 `tsm_disp/_kernels.pyx` (compiled kernels), `kernels_ref.py` (reference quadratures for tests),
 `dispersion.py`, `streaming.py` (parallel streaming, finite k_y), `diagnostics.py`, `contour_roots.py` (all roots in a box), `roots.py`, `limits.py`,
 `primary.py`, `geometry/`; `extern/streaming_ref/` (vendored reference of the streaming study); `tests/`; `benchmarks/stella_cbc/`
-(stella comparison), `benchmarks/decks/` (shaped-Miller decks), `benchmarks/timing.py`; `examples/`; `scripts/`.
+(stella comparison), `benchmarks/decks/` (shaped-Miller decks), `benchmarks/timing.py`; `examples/<name>/<name>.py` (parameter scripts) calling `evaluation_scripts/`; `scripts/`.

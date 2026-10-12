@@ -29,7 +29,7 @@ from tsm_disp.primary import Primary
 from tsm_disp.roots import find_root
 
 FAC = 0.7733975858850816
-T_P = lambda th: np.exp(-(th / np.pi)**2) / FAC
+Ftheta_P = lambda th: np.exp(-(th / np.pi)**2) / FAC
 T_D = lambda th: np.sin(th) / 2.7778
 geo = CircularAnalytic(eps=0.5 / 2.7778, vMx=lambda th: np.sin(th) / 2.7778)
 
@@ -50,7 +50,7 @@ rows = []
 wZ = 9.618900159238024106e-01 + 1j * 4.088425624787327406e-01
 ref = new(4 * 0.3557, "Z", 1e-13).D(wZ, 0.5)
 for eps in (1e-6, 1e-8):
-    v, t = tm(lambda: old.evaluate_disp_quasineutrality(omega=wZ, kr=0.5, Phi_P=4 * 0.3557, T_P=T_P, T_D=T_D, alpha_par=3,
+    v, t = tm(lambda: old.evaluate_disp_quasineutrality(omega=wZ, kr=0.5, Phi_P=4 * 0.3557, T_P=Ftheta_P, T_D=T_D, alpha_par=3,
                                                          alpha_prp=3, epsrel_theta=eps, epsabs_theta=eps, epsrel_y=eps,
                                                          epsabs_y=eps, disp_model=0.1))
     rows.append(dict(problem="Z", code="old", setting="eps %g" % eps, seconds=t, error=abs(v - ref)))
@@ -62,7 +62,7 @@ for tol in (1e-8, 1e-10):
 wL = 0.578 + 0.290j
 ref = new(2 * 0.3557, "lambda", 1e-12, 48).D(wL, 0.5)
 for eps, ta in ((1e-3, 1e-4), (1e-6, 1e-4), (1e-6, 1e-8)):
-    v, t = tm(lambda: old.evaluate_disp_quasineutrality(omega=wL, kr=0.5, Phi_P=2 * 0.3557, T_P=T_P, T_D=T_D, alpha_par=3,
+    v, t = tm(lambda: old.evaluate_disp_quasineutrality(omega=wL, kr=0.5, Phi_P=2 * 0.3557, T_P=Ftheta_P, T_D=T_D, alpha_par=3,
                                                          alpha_prp=3, epsrel_theta=eps, epsabs_theta=eps, epsrel_y=eps,
                                                          epsabs_y=eps, disp_model=-0.1, Nintegrate=1000, a_int=10,
                                                          tol_adaptive=ta))
@@ -79,7 +79,7 @@ rref = find_root(lambda w: dref.D(w, 0.5), 0.579 + 0.292j, tol=1e-12).omega
 
 def old_root():
     f = lambda x: (lambda D: [D.real, D.imag])(old.evaluate_disp_quasineutrality(
-        omega=x[0] + 1j * x[1], kr=0.5, Phi_P=2 * 0.3557, T_P=T_P, T_D=T_D, alpha_par=3, alpha_prp=3,
+        omega=x[0] + 1j * x[1], kr=0.5, Phi_P=2 * 0.3557, T_P=Ftheta_P, T_D=T_D, alpha_par=3, alpha_prp=3,
         epsrel_theta=1e-6, epsabs_theta=1e-6, epsrel_y=1e-6, epsabs_y=1e-6, disp_model=-0.1, Nintegrate=1000,
         a_int=10, tol_adaptive=1e-4))
     r = root(f, [0.579, 0.292], method="lm", tol=1e-6, options={"maxiter": 250})

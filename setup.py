@@ -1,6 +1,7 @@
-"""Build and install TSM_solver (Python package `tsm_disp`).
+"""Build and install TSM_solver: the Python package `tsm_disp` (the solver) and `evaluation_scripts` (the helpers of
+the examples; needs matplotlib, extra `plot`), so that the example scripts run from any directory.
 
-    pip install .                 # or: pip install -e .   (editable, for development)
+    pip install ".[plot]"         # or: pip install -e ".[plot]"   (editable, for development)
     python setup.py build_ext --inplace   # build the extension in place without installing
 
 OpenMP is used when the C compiler supports -fopenmp (gcc, Intel); otherwise the extension is built
@@ -65,7 +66,7 @@ setup(
     long_description=open(os.path.join(here, "README.md"), encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     author="Richard Nies",
-    packages=find_packages(include=["tsm_disp", "tsm_disp.*"]),
+    packages=find_packages(include=["tsm_disp", "tsm_disp.*", "evaluation_scripts", "evaluation_scripts.*"]),
     package_data={"tsm_disp": ["_kernels.pyx", "_jasym.pxi"]},
     ext_modules=cythonize([ext], language_level=3),
     python_requires=">=3.8",

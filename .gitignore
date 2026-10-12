@@ -11,11 +11,14 @@ build/
 !benchmarks/*.pdf
 !benchmarks/*.png
 !benchmarks/stella_cbc/*.png
-!examples/*.png
 .venv/
 dist/
-examples/output/
+# example outputs (figures and data written next to each script)
+examples/*/*.txt
+examples/*/*.npz
 # heat-flux check runs: keep only the decks and stella's flux output
 benchmarks/heat_flux/runs/*/*
 !benchmarks/heat_flux/runs/*/CBC.in
 !benchmarks/heat_flux/runs/*/CBC.fluxes
+# editor swap files
+*.swp

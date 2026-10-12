@@ -750,7 +750,7 @@ cdef struct YP:
     int want_d
     double complex Eaux # ∂D_ISM/∂ω at the last D_ism_yp call (if want_d)
     double complex omega
-    double A            # k_x Φ_P T_P(z): ω_E = −A sin y
+    double A            # k_x Φ_P Ftheta_P(z): ω_E = −A sin y
     double wM
     double b
     double g0b          # Γ0(b)

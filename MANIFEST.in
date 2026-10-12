@@ -2,4 +2,5 @@ include README.md pyproject.toml pytest.ini disp_rel.py
 include tsm_disp/_kernels.pyx tsm_disp/_jasym.pxi
 recursive-include tests *.py
 recursive-include examples *.py
+recursive-include evaluation_scripts *.py
 recursive-include scripts *.py

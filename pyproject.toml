@@ -1,5 +1,6 @@
 [build-system]
 # scipy: the kernels cimport scipy.special.cython_special (Faddeeva w and Bessel I)
 # Cython >= 3: the kernels declare their nogil functions `noexcept` (Cython 0.29 cannot build for Python >= 3.12)
-requires = ["setuptools>=61", "wheel", "Cython>=3.0", "scipy>=1.6"]
+# setuptools >= 64: editable installs (pip install -e) through PEP 660
+requires = ["setuptools>=64", "wheel", "Cython>=3.0", "scipy>=1.6"]
 build-backend = "setuptools.build_meta"

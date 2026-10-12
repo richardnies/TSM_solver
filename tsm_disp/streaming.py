@@ -6,10 +6,10 @@ primary phase y,
 
     A h = Δ_g J0 φ,    A = ω̄(z, y) − ω_M(z) E − v∥ b·∇z(z) (−i∂_z),    Δ_g = ω̄ − ω_g,
 
-with ω̄ = ω − ω_E, ω_E = −k_x Φ_P T_P(z) sin y, E = v∥² + v⊥²/2, ω_M = k_x v_Mx(z), and the primary drive
+with ω̄ = ω − ω_E, ω_E = −k_x Φ_P Ftheta_P(z) sin y, E = v∥² + v⊥²/2, ω_M = k_x v_Mx(z), and the primary drive
 ω_g = τ[ω_E + η∥ ω_E∥ (v∥² − ½) + η⊥ ω_E⊥ (v⊥² − 1)] (ω_E∥,⊥ at y + Δ∥,⊥). Writing g = Σ_m g_m e^{imz}, every
 z-dependent coefficient is a Toeplitz matrix in m (T[f]_{mm'} = f̂_{m−m'}), b·∇z(−i∂_z) is T[b·∇z] diag(m), and
-J0, Γ0 (through b(z)), T_P and the field-line weight w(z) likewise. Quasineutrality with modified adiabatic
+J0, Γ0 (through b(z)), Ftheta_P and the field-line weight w(z) likewise. Quasineutrality with modified adiabatic
 electrons, truncated to |m| ≤ M for h and |m| ≤ M_φ for φ, gives at each y
 
     D(y) φ = τ Φ e_0,    D = (1 + τ) I − T[Γ0] − Σ_v W_v J0_v (A_v⁻¹ Δ_v − I) J0_v,
@@ -42,8 +42,8 @@ class VelocityGrid:
     carried explicitly), n_u Gauss–Laguerre nodes on u = s e^{−iα}. cdepth = alpha = 0: real axes (Im ω > 0 only).
 
     The tanh contour lies below the axis for v∥ > 0 and above it for v∥ < 0, so it continues the streaming
-    resonances correctly only if Re(ω − ω_E) > 0 everywhere, i.e. ω_r > k_x Φ_P max T_P. For slower or purely
-    growing modes it gives wrong values even at Im ω > 0 (q = 2.8 CBC, k_x = 0.08, k_x Φ_P max T_P = 0.028: equal to the
+    resonances correctly only if Re(ω − ω_E) > 0 everywhere, i.e. ω_r > k_x Φ_P max Ftheta_P. For slower or purely
+    growing modes it gives wrong values even at Im ω > 0 (q = 2.8 CBC, k_x = 0.08, k_x Φ_P max Ftheta_P = 0.028: equal to the
     real contour to 1e-4 at ω = 0.1 + 0.05i and 0.3 + 0.05i, but 0.055 + 0.015i against 0.048 at ω = 0.05i); use the real
     contour there.
     """
@@ -140,7 +140,7 @@ class StreamingDispersion:
 
     geometry : periodic Geometry on z ∈ [−π, π] providing vMx, b, weight and gradpar (b·∇z): Miller /
         stella-output tubes with nperiod = 1, CircularAnalytic(q=...), AnalyticGeometry(gradpar=...).
-    primary : tsm_disp.primary.Primary (T_P(z) and Φ_P)
+    primary : tsm_disp.primary.Primary (Ftheta_P(z) and Φ_P)
     M, Mphi : harmonics |m| ≤ M for h (default max(⌈6 + 2.2 k_x max|v_Mx|/⟨b·∇z⟩⌉, Mphi + 8): the transit
         criterion M > ω_M/(v∥ b·∇z)) and |m| ≤ Mphi for φ. Mphi = 5–6 suffice for a flat primary on the circular
         model, but a localised secondary needs more: on CBC with a Gaussian primary Mphi = 8, 12, 16 give relative
@@ -193,7 +193,7 @@ class StreamingDispersion:
         bz = np.asarray(g.b(z, kx), float) * np.ones(nz)
         wz = np.asarray(g.weight(z), float) * np.ones(nz)
         gp = np.asarray(g.gradpar(z), float) * np.ones(nz) if self.streaming else np.zeros(nz)
-        TP = np.asarray(p(z), float) * np.ones(nz)
+        Ftheta_P = np.asarray(p(z), float) * np.ones(nz)
         s = dict(kx=kx, M=M, Mphi=Mphi, nm=nm, ms=ms, win=win, nphi=win.size, i0=Mphi)
         # flux-surface-average vector c_m = ∫ w e^{imz} dz = 2π ŵ_{−m}
         wh = _harmonics(wz, Mphi)
@@ -202,13 +202,13 @@ class StreamingDispersion:
         scale = lambda f: np.max(np.abs(f)) + 1e-300
         flat = lambda f: np.ptp(f) < 1e-12 * scale(f)
         circular = (np.max(np.abs(hv[np.abs(np.arange(-8, 9)) >= 2])) < 1e-12 * scale(vM)
-                    and flat(bz) and flat(wz) and flat(gp) and flat(TP))
+                    and flat(bz) and flat(wz) and flat(gp) and flat(Ftheta_P))
         use_tri = (self.path == "tridiagonal") or (self.path == "auto" and circular)
         if self.path == "tridiagonal" and not circular:
-            raise ValueError("the tridiagonal path needs the circular model (v_Mx ∝ e^{±iz}, constant b, w, b·∇z, T_P)")
+            raise ValueError("the tridiagonal path needs the circular model (v_Mx ∝ e^{±iz}, constant b, w, b·∇z, Ftheta_P)")
         s["tri"] = use_tri
         if use_tri:
-            s["kappa"] = kx * p.Phi_P * TP[0]
+            s["kappa"] = kx * p.Phi_P * Ftheta_P[0]
             s["vM0"], s["vMp"], s["vMm"] = kx * hv[8], kx * hv[9], kx * hv[7]     # f̂_0, f̂_{+1}, f̂_{−1}
             s["gp"] = gp[0]
             s["j0"] = jv(0, np.sqrt(2 * bz[0]) * np.sqrt(vg.UU))
@@ -216,7 +216,7 @@ class StreamingDispersion:
         else:
             s["Tv"] = kx * _toeplitz(vM, nm)
             s["S0"] = _toeplitz(gp, nm) * ms[None, :]
-            s["K"] = kx * p.Phi_P * _toeplitz(TP, nm)
+            s["K"] = kx * p.Phi_P * _toeplitz(Ftheta_P, nm)
             J0T = _toeplitz(jv(0, np.sqrt(2 * bz)[None, :] * np.sqrt(vg.u)[:, None]), nm)   # (n_u, nm, nm)
             s["J0w"] = np.ascontiguousarray(J0T[:, :, win])                                  # (n_u, nm, nphi)
             s["wJ0"] = np.ascontiguousarray(J0T[:, win, :])                                  # (n_u, nphi, nm)
@@ -368,15 +368,15 @@ class BinormalDispersion:
         if not self.binormal_drift:
             vMy = 0 * vMy
         gpz = np.asarray(g.gradpar(z), float) * one if self.streaming else np.zeros(nz)
-        TP = np.asarray(p(z), float) * one
+        Ftheta_P = np.asarray(p(z), float) * one
         wz = np.asarray(g.weight(z), float) * one
         bP = np.asarray(g.b_k(z, 0.0, self.ky), float) * one
         s = dict(kx=kx, M=M, Mphi=Mphi, nm=nm, nn=nn, ms=ms, ns=ns)
         s["S0"] = _toeplitz(gpz, nm) * ms[None, :]
         s["Tx"] = kx * _toeplitz(vMx, nm)
         s["Ty"] = self.ky * _toeplitz(vMy, nm)
-        s["K0"] = kx * p.Phi_P * _toeplitz(TP, nm)                                       # drive (not gyroaveraged)
-        s["KP"] = kx * p.Phi_P * _toeplitz(TP[None, :] * jv(0, np.sqrt(2 * bP)[None, :] * np.sqrt(vg.u)[:, None]), nm)
+        s["K0"] = kx * p.Phi_P * _toeplitz(Ftheta_P, nm)                                       # drive (not gyroaveraged)
+        s["KP"] = kx * p.Phi_P * _toeplitz(Ftheta_P[None, :] * jv(0, np.sqrt(2 * bP)[None, :] * np.sqrt(vg.u)[:, None]), nm)
         J0n, G0n = [], []
         for n in ns:
             bn = np.asarray(g.b_k(z, kx, n * self.ky), float) * one

@@ -26,12 +26,12 @@ def test_matches_stella(geo_kw, den0_phase, tpar0, tperp0, q_stella):
 
 @pytest.mark.fast
 def test_formula_and_inverse():
-    """Q ∝ Φ_P² ⟨T_P²⟩(½η∥ sinΔ∥ + η⊥ sinΔ⊥)/(4 f² k_y ⟨|∇ρ|⟩) and with_heat_flux inverts it."""
+    """Q ∝ Φ_P² ⟨Ftheta_P²⟩(½η∥ sinΔ∥ + η⊥ sinΔ⊥)/(4 f² k_y ⟨|∇ρ|⟩) and with_heat_flux inverts it."""
     g = AnalyticGeometry(vMx=np.sin, grho=lambda t: 1 + 0.3 * np.cos(t), exb_nonlin_fac=0.5, sign_torflux=-1)
     p = Primary.top_hat(0.0, np.pi, 2.0)
     Q = heat_flux_stella(p, g, 0.2, 3.0, 1.0, 0.4, -0.1)
-    TP2, gr = 0.5, 1.0                                           # ⟨T_P²⟩ and ⟨|∇ρ|⟩ for uniform weight
-    assert abs(Q - (1.5 * np.sin(0.4) + np.sin(-0.1)) * 4.0 * TP2 / (4 * 0.25 * 0.2 * gr)) < 1e-12
+    Ftheta_P2, gr = 0.5, 1.0                                           # ⟨Ftheta_P²⟩ and ⟨|∇ρ|⟩ for uniform weight
+    assert abs(Q - (1.5 * np.sin(0.4) + np.sin(-0.1)) * 4.0 * Ftheta_P2 / (4 * 0.25 * 0.2 * gr)) < 1e-12
     p2 = Primary.top_hat(0.0, np.pi, 1.0).with_heat_flux(Q, g, 0.2, 3.0, 1.0, 0.4, -0.1)
     assert abs(p2.Phi_P - 2.0) < 1e-12 and p2(0.1) == 1.0
     assert heat_flux_stella(p, g, 0.2, 3.0, 3.0, 0.0, 0.0) == 0.0               # in-phase primary: no flux
